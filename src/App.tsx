@@ -186,8 +186,8 @@ const ui: Record<Language, any> = {
         expandPreview: '放大 3D 预览',
         workspaceReady: '工作区已就绪。',
         heightFromRatio: '高度将按图片比例计算。',
-        syncBoardWidth: '与拼豆板宽度同步',
-        syncBoardWidthHint: '图片生成宽度跟随当前拼豆板宽度；关闭后可手动设置。',
+        syncBoardWidth: '跟随拼豆板宽度',
+        syncBoardWidthHint: '勾选后图片生成宽度始终与拼豆板宽度一致；不勾选可手动设置，默认与画布宽度相同。',
         status: (width: number, height: number, beads: number, colors: number) => `${width} * ${height} - ${beads} 颗 - ${colors} 色`,
         panelStatus: (width: number, height: number, colors: number, beads: number, boards: number) => `${width} * ${height} - ${colors} 色 - ${beads} 颗 - ${boards} 块板`,
         isolatedBeads: (count: number) => (count > 0 ? `${count} 颗拼豆无相邻，熨烫时留意。` : '没有无相邻拼豆。'),
@@ -423,8 +423,8 @@ const ui: Record<Language, any> = {
         expandPreview: 'Expand 3D preview',
         workspaceReady: 'Workspace ready.',
         heightFromRatio: 'Height is calculated from the image ratio.',
-        syncBoardWidth: 'Sync with board width',
-        syncBoardWidthHint: 'Generation width follows the board width; turn off to set it manually.',
+        syncBoardWidth: 'Follow board width',
+        syncBoardWidthHint: 'When checked, generation width always matches the board width; unchecked, set it manually (defaults to the canvas width).',
         status: (width: number, height: number, beads: number, colors: number) => `${width} * ${height} - ${beads} beads - ${colors} colors`,
         panelStatus: (width: number, height: number, colors: number, beads: number, boards: number) => `${width} * ${height} - ${colors} colors - ${beads} beads - ${boards} boards`,
         isolatedBeads: (count: number) => (count > 0 ? `${count} beads have no neighbors; watch when fusing.` : 'No beads without neighbors.'),
@@ -620,8 +620,10 @@ export default function App() {
   const [referencePlacement, setReferencePlacement] = useState<ReferencePlacement>('below');
   const [canvasWidth, setCanvasWidth] = useState(project.width);
   const [canvasHeight, setCanvasHeight] = useState(project.height);
-  const [convertWidth, setConvertWidth] = useState(defaultImportSettings.width);
-  const [syncConvertWidth, setSyncConvertWidth] = useState(true);
+  // 默认与当前画布宽度一致，但不锁定；勾选“跟随”后才持续同步。
+  const [convertWidth, setConvertWidth] = useState(project.width);
+  const [convertWidthEditTick, setConvertWidthEditTick] = useState(0);
+  const [syncConvertWidth, setSyncConvertWidth] = useState(false);
   const [maxColors, setMaxColors] = useState(defaultImportSettings.maxColors);
   const [generationStyle, setGenerationStyle] = useState<GenerationStyle>(defaultImportSettings.generationStyle);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(defaultImportSettings.backgroundMode);
@@ -845,7 +847,8 @@ export default function App() {
       void generateFromImage({ recordHistory: shouldCommit, automatic: true });
     }, 420);
     return () => window.clearTimeout(timer);
-  }, [pendingFile, convertWidth, maxColors, generationStyle, backgroundMode, tolerance, paletteMode, project.activeBrand]);
+    // 只响应用户主动改宽度（tick），画布尺寸或同步引起的宽度变化不应触发重新生成。
+  }, [pendingFile, convertWidthEditTick, maxColors, generationStyle, backgroundMode, tolerance, paletteMode, project.activeBrand]);
 
   useEffect(() => {
     if (!frameSession || !framePreviewRef.current) return;
@@ -924,7 +927,6 @@ export default function App() {
   }
 
   function resetImportSettings() {
-    setConvertWidth(defaultImportSettings.width);
     setMaxColors(defaultImportSettings.maxColors);
     setGenerationStyle(defaultImportSettings.generationStyle);
     setBackgroundMode(defaultImportSettings.backgroundMode);
@@ -1066,6 +1068,8 @@ export default function App() {
     setCopySelectionIndices([]);
     resetAdjustments();
     resetImportSettings();
+    // 新建画布后图片生成宽度跟随新画布，保持“默认一致”。
+    setConvertWidth(width);
     setSelectedColorId(defaultColorId);
     setRecentColorIds(defaultRecentColorIds);
     setPaletteGroup('all');
@@ -1245,19 +1249,17 @@ export default function App() {
       });
       if (requestId !== generationRequestRef.current) return;
       if (options.recordHistory) commitHistory();
-      const nextWidth = Math.max(sourceProject.width, result.width);
-      const nextHeight = Math.max(sourceProject.height, result.height);
+      // 画布尺寸始终由用户控制：生成结果原尺寸居中，超出画布时才等比缩小，不悄悄撑大画布。
+      const nextWidth = sourceProject.width;
+      const nextHeight = sourceProject.height;
       const nextLayers = sourceLayers.map((layer) => {
         if (layer.id === targetLayerId) {
           return {
             ...layer,
-            cells: resizeCells(result.cells, result.width, result.height, nextWidth, nextHeight),
+            cells: fitCellsIntoCanvas(result.cells, result.width, result.height, nextWidth, nextHeight),
           };
         }
-        return {
-          ...layer,
-          cells: resizeCells(layer.cells, sourceProject.width, sourceProject.height, nextWidth, nextHeight),
-        };
+        return layer;
       });
       const nextProject = {
         ...sourceProject,
@@ -1888,11 +1890,27 @@ export default function App() {
                 max={180}
                 disabled={syncConvertWidth}
                 value={convertWidth}
-                onChange={(event) => setConvertWidth(Number(event.target.value))}
+                onChange={(event) => {
+                  setConvertWidth(Number(event.target.value));
+                  // 手动改宽度时递增 tick，触发一次重新生成；被动同步不触发。
+                  setConvertWidthEditTick((tick) => tick + 1);
+                }}
               />
             </label>
             <label className="checkline image-sync-width" title={text.syncBoardWidthHint}>
-              <input type="checkbox" checked={syncConvertWidth} onChange={(event) => setSyncConvertWidth(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={syncConvertWidth}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setSyncConvertWidth(checked);
+                  if (checked) {
+                    // 开启跟随时立即按画布宽度重置并重新生成，避免显示与图案不一致。
+                    setConvertWidth(project.width);
+                    setConvertWidthEditTick((tick) => tick + 1);
+                  }
+                }}
+              />
               <span>{text.syncBoardWidth}</span>
             </label>
             <label className="image-range-field">
@@ -3517,6 +3535,49 @@ function resizeCells(
   for (let y = 0; y < copyHeight; y += 1) {
     for (let x = 0; x < copyWidth; x += 1) {
       next[y * newWidth + x] = cells[y * oldWidth + x] ?? null;
+    }
+  }
+  return next;
+}
+
+/**
+ * 把生成结果放进画布：能完整放下就居中，放不下就等比缩小，永不放大或撑大画布。
+ */
+function fitCellsIntoCanvas(
+  cells: Array<string | null>,
+  width: number,
+  height: number,
+  canvasWidth: number,
+  canvasHeight: number,
+): Array<string | null> {
+  if (width <= canvasWidth && height <= canvasHeight) {
+    return centerCellsInCanvas(cells, width, height, canvasWidth, canvasHeight);
+  }
+  return rescaleCellsToFit(cells, width, height, canvasWidth, canvasHeight);
+}
+
+/**
+ * 图片生成后把结果原尺寸居中放进画布：画布尺寸由用户控制，生成结果不拉伸、不放大，
+ * 只做水平/垂直居中，避免图案贴在左上角、另一侧留出大片空白。
+ */
+function centerCellsInCanvas(
+  cells: Array<string | null>,
+  oldWidth: number,
+  oldHeight: number,
+  newWidth: number,
+  newHeight: number,
+): Array<string | null> {
+  const next = Array.from({ length: newWidth * newHeight }, () => null as string | null);
+  if (oldWidth <= 0 || oldHeight <= 0) return next;
+  const offsetX = Math.floor((newWidth - oldWidth) / 2);
+  const offsetY = Math.floor((newHeight - oldHeight) / 2);
+  for (let y = 0; y < oldHeight; y += 1) {
+    const targetY = y + offsetY;
+    if (targetY < 0 || targetY >= newHeight) continue;
+    for (let x = 0; x < oldWidth; x += 1) {
+      const targetX = x + offsetX;
+      if (targetX < 0 || targetX >= newWidth) continue;
+      next[targetY * newWidth + targetX] = cells[y * oldWidth + x] ?? null;
     }
   }
   return next;
