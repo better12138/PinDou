@@ -13,14 +13,19 @@ fs.copyFileSync(path.join(root, 'node_modules', 'react-dom', 'umd', 'react-dom.p
 fs.copyFileSync(path.join(root, 'node_modules', 'three', 'build', 'three.module.js'), path.join(vendor, 'three.module.js'));
 fs.copyFileSync(path.join(root, 'node_modules', 'three', 'build', 'three.core.js'), path.join(vendor, 'three.core.js'));
 
-// 人像抠图（MediaPipe Selfie Segmentation）资源全部本地自托管，避免运行时依赖境外 CDN。
-const cutoutSourceDir = path.join(root, 'node_modules', '@mediapipe', 'selfie_segmentation');
-const cutoutVendorDir = path.join(vendor, 'selfie_segmentation');
-fs.rmSync(cutoutVendorDir, { recursive: true, force: true });
-fs.mkdirSync(cutoutVendorDir, { recursive: true });
-for (const name of fs.readdirSync(cutoutSourceDir)) {
-  if (!/\.(js|wasm|data|binarypb|tflite)$/.test(name)) continue;
-  fs.copyFileSync(path.join(cutoutSourceDir, name), path.join(cutoutVendorDir, name));
+// 人像相关模型（MediaPipe）资源全部本地自托管，避免运行时依赖境外 CDN。
+copyMediaPipePackage('selfie_segmentation'); // 人像抠图
+copyMediaPipePackage('face_detection'); // 人像自动取景
+
+function copyMediaPipePackage(name) {
+  const sourceDir = path.join(root, 'node_modules', '@mediapipe', name);
+  const targetDir = path.join(vendor, name);
+  fs.rmSync(targetDir, { recursive: true, force: true });
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const file of fs.readdirSync(sourceDir)) {
+    if (!/\.(js|wasm|data|binarypb|tflite)$/.test(file)) continue;
+    fs.copyFileSync(path.join(sourceDir, file), path.join(targetDir, file));
+  }
 }
 
 for (const filePath of walk(outSrc)) {

@@ -25,6 +25,7 @@ const html = `<!doctype html>
     <script src="./vendor/react.production.min.js"></script>
     <script src="./vendor/react-dom.production.min.js"></script>
     <script src="./vendor/selfie_segmentation/selfie_segmentation.js"></script>
+    <script src="./vendor/face_detection/face_detection.js"></script>
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>

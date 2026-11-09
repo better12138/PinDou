@@ -4,6 +4,8 @@ import { downloadPrintPdf, downloadPrintPng, downloadProjectJson, downloadUsageW
 import type { PrintExportOptions } from './exporters';
 import { imageFileToBeads } from './imageToBeads';
 import { cutoutPortrait } from './cutout';
+import { buildFrameRect, cropImageFile, detectPortraitFrame, drawFramePreview } from './autoframe';
+import type { FrameRect } from './autoframe';
 import { basicPalette, colorDistance, completePalette, getColor, nearestPaletteColor } from './palette';
 import { composeVisibleCells, createLayer, createProject, loadDraft, normalizeProject, saveDraft, withCells, withLayers } from './project';
 import { findIsolatedBeads, summarizeUsage } from './usage';
@@ -85,6 +87,15 @@ const ui: Record<Language, any> = {
         cutout: '智能抠图（人像）',
         cutoutRunning: '正在识别人像…',
         cutoutHint: '人物照片一键去背景，本地运行不上传图片。',
+        autoFrame: '人像自动取景',
+        autoFrameRunning: '正在识别人脸…',
+        autoFrameHint: '自动识别人脸，保留头顶留白与肩部裁出人像构图，可手动微调。',
+        frameHeadroom: '头顶留白',
+        frameScale: '取景范围',
+        frameOffset: '水平位置',
+        frameApply: '应用取景',
+        frameCancel: '取消',
+        frameDetected: '已识别人脸，微调构图后点「应用取景」。',
         transparentBackdrop: '透明底',
         backdropColor: '预览底色',
         preparingPattern: '正在生成图案',
@@ -303,6 +314,15 @@ const ui: Record<Language, any> = {
         cutout: 'Smart cutout (portrait)',
         cutoutRunning: 'Detecting portrait...',
         cutoutHint: 'One-tap background removal for portraits, runs locally without uploading.',
+        autoFrame: 'Auto framing (portrait)',
+        autoFrameRunning: 'Detecting face...',
+        autoFrameHint: 'Detects the face and crops with headroom and shoulders; fine-tune manually.',
+        frameHeadroom: 'Headroom',
+        frameScale: 'Framing',
+        frameOffset: 'Horizontal',
+        frameApply: 'Apply framing',
+        frameCancel: 'Cancel',
+        frameDetected: 'Face detected. Fine-tune the framing, then apply.',
         transparentBackdrop: 'Transparent',
         backdropColor: 'Backdrop',
         preparingPattern: 'Generating pattern',
@@ -520,6 +540,8 @@ export default function App() {
   const jsonInputRef = useRef<HTMLInputElement | null>(null);
   const autoGenerateShouldCommitRef = useRef(false);
   const generationRequestRef = useRef(0);
+  const frameRequestRef = useRef(0);
+  const framePreviewRef = useRef<HTMLCanvasElement | null>(null);
   const adjustmentSessionRef = useRef<{ layerId: string | null; baseCells: Array<string | null> }>({ layerId: null, baseCells: [] });
   const soloVisibilitySnapshotRef = useRef<Record<string, boolean> | null>(null);
   const [language, setLanguage] = useState<Language>(() => (localStorage.getItem(languageKey) === 'en' ? 'en' : 'zh'));
@@ -580,6 +602,14 @@ export default function App() {
   const [tolerance, setTolerance] = useState(defaultImportSettings.tolerance);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isCutting, setIsCutting] = useState(false);
+  const [isFraming, setIsFraming] = useState(false);
+  const [frameSession, setFrameSession] = useState<{
+    file: File;
+    face: FrameRect;
+    headroom: number;
+    scale: number;
+    offsetX: number;
+  } | null>(null);
   const [notice, setNotice] = useState(text.workspaceReady);
   const [floatingHelp, setFloatingHelp] = useState<FloatingHelp | null>(null);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
@@ -785,6 +815,11 @@ export default function App() {
     }, 420);
     return () => window.clearTimeout(timer);
   }, [pendingFile, convertWidth, maxColors, generationStyle, backgroundMode, tolerance, paletteMode]);
+
+  useEffect(() => {
+    if (!frameSession || !framePreviewRef.current) return;
+    void drawFramePreview(framePreviewRef.current, frameSession.file, buildFrameRect(frameSession.face, frameSession));
+  }, [frameSession]);
 
   function commitHistory() {
     setPast((items) => [...items.slice(-39), project]);
@@ -1035,6 +1070,10 @@ export default function App() {
       setNotice(language === 'zh' ? '请使用 PNG、JPG、JPEG 或 WebP 图片。' : 'Use a PNG, JPG, JPEG, or WebP image.');
       return;
     }
+    // 换图时丢弃仍在进行的取景会话，避免旧结果作用到新图片上。
+    frameRequestRef.current += 1;
+    setFrameSession(null);
+    setIsFraming(false);
     setPendingFile(file);
     setPendingImageUrl((current) => {
       if (current) URL.revokeObjectURL(current);
@@ -1068,6 +1107,42 @@ export default function App() {
       setNotice(error instanceof Error ? error.message : language === 'zh' ? '抠图失败，请重试。' : 'Cutout failed, please retry.');
     } finally {
       setIsCutting(false);
+    }
+  }
+
+  async function handleAutoFrame() {
+    if (!pendingFile || isFraming || isCutting) return;
+    const requestId = frameRequestRef.current + 1;
+    frameRequestRef.current = requestId;
+    setIsFraming(true);
+    setNotice(language === 'zh' ? '正在定位人脸...' : 'Locating the face...');
+    try {
+      const result = await detectPortraitFrame(pendingFile);
+      if (requestId !== frameRequestRef.current) return;
+      setFrameSession({ file: pendingFile, face: result.face, headroom: 0.45, scale: 1, offsetX: 0 });
+      setNotice(text.frameDetected);
+    } catch (error) {
+      if (requestId !== frameRequestRef.current) return;
+      setNotice(error instanceof Error ? error.message : language === 'zh' ? '取景失败，请重试。' : 'Framing failed, please retry.');
+    } finally {
+      if (requestId === frameRequestRef.current) setIsFraming(false);
+    }
+  }
+
+  async function applyAutoFrame() {
+    if (!frameSession) return;
+    try {
+      const framed = await cropImageFile(frameSession.file, buildFrameRect(frameSession.face, frameSession));
+      setFrameSession(null);
+      setPendingFile(framed);
+      setPendingImageUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return URL.createObjectURL(framed);
+      });
+      autoGenerateShouldCommitRef.current = true;
+      setNotice(language === 'zh' ? '已按人像构图裁剪，正在生成图案。' : 'Portrait framing applied. Generating the pattern.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : language === 'zh' ? '取景失败，请重试。' : 'Framing failed, please retry.');
     }
   }
 
@@ -1654,6 +1729,71 @@ export default function App() {
           >
             {isCutting ? text.cutoutRunning : text.cutout}
           </button>
+
+          <button
+            className="cutout-button"
+            type="button"
+            onClick={() => void handleAutoFrame()}
+            disabled={!pendingFile || isGenerating || isFraming}
+            title={text.autoFrameHint}
+          >
+            {isFraming ? text.autoFrameRunning : text.autoFrame}
+          </button>
+
+          {frameSession && (
+            <div className="frame-panel">
+              <canvas ref={framePreviewRef} className="frame-preview" aria-label={text.autoFrame} />
+              <label className="image-range-field">
+                <span>
+                  <span>{text.frameHeadroom}</span>
+                  <strong>{Math.round(frameSession.headroom * 100)}%</strong>
+                </span>
+                <input
+                  aria-label="Headroom"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={Math.round(frameSession.headroom * 100)}
+                  onChange={(event) => setFrameSession({ ...frameSession, headroom: Number(event.target.value) / 100 })}
+                />
+              </label>
+              <label className="image-range-field">
+                <span>
+                  <span>{text.frameScale}</span>
+                  <strong>{frameSession.scale.toFixed(2)}x</strong>
+                </span>
+                <input
+                  aria-label="Framing scale"
+                  type="range"
+                  min={0.8}
+                  max={1.6}
+                  step={0.05}
+                  value={frameSession.scale}
+                  onChange={(event) => setFrameSession({ ...frameSession, scale: Number(event.target.value) })}
+                />
+              </label>
+              <label className="image-range-field">
+                <span>
+                  <span>{text.frameOffset}</span>
+                  <strong>{Math.round(frameSession.offsetX * 100)}%</strong>
+                </span>
+                <input
+                  aria-label="Horizontal offset"
+                  type="range"
+                  min={-30}
+                  max={30}
+                  step={1}
+                  value={Math.round(frameSession.offsetX * 100)}
+                  onChange={(event) => setFrameSession({ ...frameSession, offsetX: Number(event.target.value) / 100 })}
+                />
+              </label>
+              <div className="frame-actions">
+                <button type="button" className="cutout-button" onClick={() => setFrameSession(null)}>{text.frameCancel}</button>
+                <button type="button" className="cutout-button frame-apply-button" onClick={() => void applyAutoFrame()}>{text.frameApply}</button>
+              </div>
+            </div>
+          )}
 
           <div className="image-field-grid">
             <label className="image-number-field">
