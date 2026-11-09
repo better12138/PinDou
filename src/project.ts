@@ -35,6 +35,7 @@ export function createProject(width = 52, height = 52, name = 'Untitled Pattern'
       showActiveLayerOnly: false,
       showColorCodes: false,
       beadDisplayMode: 'bead',
+      previewBackdrop: '#fffdf7',
       beadsPerPack: 500,
       rightClickAction: 'pan',
     },

@@ -24,6 +24,7 @@ const html = `<!doctype html>
     <div id="root"></div>
     <script src="./vendor/react.production.min.js"></script>
     <script src="./vendor/react-dom.production.min.js"></script>
+    <script src="./vendor/selfie_segmentation/selfie_segmentation.js"></script>
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>

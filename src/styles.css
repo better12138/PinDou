@@ -1447,6 +1447,29 @@ button:focus-visible {
   justify-items: center;
 }
 
+.cutout-button {
+  width: 100%;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.cutout-button:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.backdrop-color-input {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: none;
+  cursor: pointer;
+}
+
 .upload-zone.has-image .upload-zone-text {
   justify-items: start;
 }

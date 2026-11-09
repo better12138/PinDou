@@ -38,6 +38,8 @@ export type ProjectSettings = {
   showActiveLayerOnly: boolean;
   showColorCodes: boolean;
   beadDisplayMode: DisplayMode;
+  /** 画布预览底色：hex 颜色，或 'transparent' 表示透明底（棋盘格） */
+  previewBackdrop: string;
   beadsPerPack: number;
   rightClickAction: RightClickAction;
 };

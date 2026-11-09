@@ -807,6 +807,24 @@ export default function WorkspaceCanvas({
   );
 }
 
+function drawBackdropCheckerboard(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  cellSize: number,
+): void {
+  const step = Math.max(6, cellSize);
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = '#e5e9ef';
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      if (Math.round(x / step + y / step) % 2 === 0) continue;
+      context.fillRect(x, y, step, step);
+    }
+  }
+}
+
 function drawPattern(
   context: CanvasRenderingContext2D,
   project: BeadProject,
@@ -842,8 +860,14 @@ function drawPattern(
   context.save();
   context.translate(pan.x, pan.y);
   context.scale(zoom, zoom);
-  context.fillStyle = '#fffdf7';
-  context.fillRect(0, 0, project.width * cellSize, project.height * cellSize);
+  const boardPixelWidth = project.width * cellSize;
+  const boardPixelHeight = project.height * cellSize;
+  if (project.settings.previewBackdrop === 'transparent') {
+    drawBackdropCheckerboard(context, boardPixelWidth, boardPixelHeight, cellSize);
+  } else {
+    context.fillStyle = project.settings.previewBackdrop || '#fffdf7';
+    context.fillRect(0, 0, boardPixelWidth, boardPixelHeight);
+  }
   const visibleLayers = (project.layers ?? []).filter((layer) => layer.visible);
   const highlightedCells = highlightedCellIndices.length > 0 ? new Set(highlightedCellIndices) : null;
   if (referenceImage.visible && referenceImage.placement === 'below') {

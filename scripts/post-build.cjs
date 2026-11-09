@@ -13,6 +13,16 @@ fs.copyFileSync(path.join(root, 'node_modules', 'react-dom', 'umd', 'react-dom.p
 fs.copyFileSync(path.join(root, 'node_modules', 'three', 'build', 'three.module.js'), path.join(vendor, 'three.module.js'));
 fs.copyFileSync(path.join(root, 'node_modules', 'three', 'build', 'three.core.js'), path.join(vendor, 'three.core.js'));
 
+// 人像抠图（MediaPipe Selfie Segmentation）资源全部本地自托管，避免运行时依赖境外 CDN。
+const cutoutSourceDir = path.join(root, 'node_modules', '@mediapipe', 'selfie_segmentation');
+const cutoutVendorDir = path.join(vendor, 'selfie_segmentation');
+fs.rmSync(cutoutVendorDir, { recursive: true, force: true });
+fs.mkdirSync(cutoutVendorDir, { recursive: true });
+for (const name of fs.readdirSync(cutoutSourceDir)) {
+  if (!/\.(js|wasm|data|binarypb|tflite)$/.test(name)) continue;
+  fs.copyFileSync(path.join(cutoutSourceDir, name), path.join(cutoutVendorDir, name));
+}
+
 for (const filePath of walk(outSrc)) {
   if (!filePath.endsWith('.js')) continue;
   let source = fs.readFileSync(filePath, 'utf8');

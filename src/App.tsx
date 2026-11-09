@@ -3,6 +3,7 @@ import ThreePreview from './ThreePreview';
 import { downloadPrintPdf, downloadPrintPng, downloadProjectJson, downloadUsageWorkbook } from './exporters';
 import type { PrintExportOptions } from './exporters';
 import { imageFileToBeads } from './imageToBeads';
+import { cutoutPortrait } from './cutout';
 import { basicPalette, colorDistance, completePalette, getColor, nearestPaletteColor } from './palette';
 import { composeVisibleCells, createLayer, createProject, loadDraft, normalizeProject, saveDraft, withCells, withLayers } from './project';
 import { findIsolatedBeads, summarizeUsage } from './usage';
@@ -81,6 +82,11 @@ const ui: Record<Language, any> = {
         background: '背景',
         keepBackground: '保留背景',
         removeWhite: '去除背景',
+        cutout: '智能抠图（人像）',
+        cutoutRunning: '正在识别人像…',
+        cutoutHint: '人物照片一键去背景，本地运行不上传图片。',
+        transparentBackdrop: '透明底',
+        backdropColor: '预览底色',
         preparingPattern: '正在生成图案',
         autoGenerateHint: '调整参数后会自动更新画布。',
         palette: '调色盘',
@@ -294,6 +300,11 @@ const ui: Record<Language, any> = {
         background: 'Background',
         keepBackground: 'Keep background',
         removeWhite: 'Remove background',
+        cutout: 'Smart cutout (portrait)',
+        cutoutRunning: 'Detecting portrait...',
+        cutoutHint: 'One-tap background removal for portraits, runs locally without uploading.',
+        transparentBackdrop: 'Transparent',
+        backdropColor: 'Backdrop',
         preparingPattern: 'Generating pattern',
         autoGenerateHint: 'Changes update the canvas automatically.',
         palette: 'Palette',
@@ -568,6 +579,7 @@ export default function App() {
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(defaultImportSettings.backgroundMode);
   const [tolerance, setTolerance] = useState(defaultImportSettings.tolerance);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isCutting, setIsCutting] = useState(false);
   const [notice, setNotice] = useState(text.workspaceReady);
   const [floatingHelp, setFloatingHelp] = useState<FloatingHelp | null>(null);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
@@ -1036,6 +1048,27 @@ export default function App() {
     resetReferenceTransform();
     autoGenerateShouldCommitRef.current = true;
     setNotice(language === 'zh' ? `正在生成 ${file.name}...` : `Generating ${file.name}...`);
+  }
+
+  async function handlePortraitCutout() {
+    if (!pendingFile || isCutting) return;
+    setIsCutting(true);
+    setNotice(language === 'zh' ? '正在识别人像并去除背景...' : 'Detecting portrait and removing background...');
+    try {
+      const cutoutFile = await cutoutPortrait(pendingFile);
+      setPendingFile(cutoutFile);
+      setPendingImageUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return URL.createObjectURL(cutoutFile);
+      });
+      setBackgroundMode('keep');
+      autoGenerateShouldCommitRef.current = true;
+      setNotice(language === 'zh' ? '已去除背景，正在生成透明底图案。' : 'Background removed. Generating a transparent pattern.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : language === 'zh' ? '抠图失败，请重试。' : 'Cutout failed, please retry.');
+    } finally {
+      setIsCutting(false);
+    }
   }
 
   function handleReferenceImageFile(file: File) {
@@ -1610,6 +1643,16 @@ export default function App() {
               <strong>{isGenerating ? text.preparingPattern : pendingFile ? pendingFile.name : text.uploadImage}</strong>
               <span>{isGenerating ? pendingFile?.name : pendingFile ? 'PNG / JPG / WebP' : 'PNG, JPG, WebP'}</span>
             </span>
+          </button>
+
+          <button
+            className="cutout-button"
+            type="button"
+            onClick={handlePortraitCutout}
+            disabled={!pendingFile || isGenerating || isCutting}
+            title={text.cutoutHint}
+          >
+            {isCutting ? text.cutoutRunning : text.cutout}
           </button>
 
           <div className="image-field-grid">
@@ -2794,6 +2837,32 @@ export default function App() {
                     }
                   />
                   {text.coordinates}
+                </label>
+              </div>
+              <div className="view-row">
+                <label className="checkline">
+                  <input
+                    type="checkbox"
+                    checked={project.settings.previewBackdrop === 'transparent'}
+                    onChange={(event) =>
+                      updateProject({
+                        ...project,
+                        settings: { ...project.settings, previewBackdrop: event.target.checked ? 'transparent' : '#fffdf7' },
+                      })
+                    }
+                  />
+                  {text.transparentBackdrop}
+                </label>
+                <label className="checkline">
+                  {text.backdropColor}
+                  <input
+                    type="color"
+                    className="backdrop-color-input"
+                    value={project.settings.previewBackdrop === 'transparent' ? '#fffdf7' : project.settings.previewBackdrop}
+                    onChange={(event) =>
+                      updateProject({ ...project, settings: { ...project.settings, previewBackdrop: event.target.value } })
+                    }
+                  />
                 </label>
               </div>
               <div className="view-row">
