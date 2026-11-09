@@ -9,6 +9,8 @@ type StyleProfile = {
   candidateDistanceFactor: number;
   postStrengthBias: number;
   useAverageFallback: boolean;
+  /** 写实风格用误差扩散抖动还原渐变，卡通风格保持平涂。 */
+  useErrorDiffusion: boolean;
 };
 
 type SampledCell = {
@@ -26,6 +28,7 @@ const styleProfiles: Record<GenerationStyle, StyleProfile> = {
     candidateDistanceFactor: 1.35,
     postStrengthBias: 1,
     useAverageFallback: false,
+    useErrorDiffusion: false,
   },
   realistic: {
     sampleSide: 5,
@@ -35,6 +38,7 @@ const styleProfiles: Record<GenerationStyle, StyleProfile> = {
     candidateDistanceFactor: 0.65,
     postStrengthBias: -1,
     useAverageFallback: true,
+    useErrorDiffusion: true,
   },
 };
 
@@ -60,7 +64,9 @@ export async function imageFileToBeads(file: File, options: ConvertOptions): Pro
   const sampledCells = sampleGridCells(data, sourceWidth, sourceHeight, width, height, options, backgroundColor, profile, speckleStrength);
   const ranked = rankPaletteColors(sampledCells, options, activePalette, profile);
   const candidates = selectCandidateColors(ranked, Math.max(2, options.maxColors), activePalette, speckleStrength, profile);
-  const cells = sampledCells.map((cell) => chooseCellColor(cell, candidates, profile));
+  const cells = profile.useErrorDiffusion
+    ? ditherCellColors(sampledCells, width, height, candidates, profile)
+    : sampledCells.map((cell) => chooseCellColor(cell, candidates, profile));
 
   const mergedCells = mergeSimilarColors(cells, speckleStrength, candidates);
   const compactCells = reduceTinyRegions(mergedCells, width, height, speckleStrength, candidates);
@@ -323,6 +329,165 @@ function chooseCellColor(cell: SampledCell, candidates: PaletteColor[], profile:
     return primary.color.id;
   }
   return nearestPaletteColor(cell.average, candidates).id;
+}
+
+/**
+ * 写实风格的量化：先为每个格子确定「目标色」——双色交界处取主导色块以保持边缘锐利，
+ * 纯色/渐变区域取平均色；再用蛇形 Floyd–Steinberg 误差扩散把平均色映射到受限色板，
+ * 让渐变用同一套色板也能呈现细腻的过渡。
+ */
+function ditherCellColors(
+  cells: SampledCell[],
+  width: number,
+  height: number,
+  candidates: PaletteColor[],
+  profile: StyleProfile,
+): Array<string | null> {
+  const targets = cells.map((cell) => cellTargetColor(cell, profile));
+  const work: Array<[number, number, number] | null> = targets.map((rgb): [number, number, number] | null =>
+    rgb ? [rgb[0], rgb[1], rgb[2]] : null,
+  );
+  const base: Array<[number, number, number] | null> = targets.map((rgb): [number, number, number] | null =>
+    rgb ? [rgb[0], rgb[1], rgb[2]] : null,
+  );
+  const result: Array<string | null> = new Array(cells.length).fill(null);
+  // 拼豆是实体颗粒，抖动要克制：弱扩散 + 限制单次误差，只在平滑区域内生效。
+  const strength = 0.4;
+  const maxError = 12;
+  // 与相邻格子色差大的位置属于边缘/细节，保持平涂，不参与抖动。
+  const smooth = new Uint8Array(cells.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = y * width + x;
+      const own = base[index];
+      if (!own) continue;
+      let isSmooth = true;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const neighborBase = base[ny * width + nx];
+        if (!neighborBase) continue;
+        if (colorDistance(own, neighborBase) > 40) {
+          isSmooth = false;
+          break;
+        }
+      }
+      if (isSmooth) smooth[index] = 1;
+    }
+  }
+
+  const spread = (x: number, y: number, error: [number, number, number], weight: number, from: [number, number, number]) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const index = y * width + x;
+    const target = work[index];
+    const neighborBase = base[index];
+    if (!target || !neighborBase || !smooth[index]) return;
+    // 跨色块边界不扩散，避免噪点渗进相邻区域。
+    if (colorDistance(from, neighborBase) > 72) return;
+    target[0] += error[0] * weight;
+    target[1] += error[1] * weight;
+    target[2] += error[2] * weight;
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    const reverse = y % 2 === 1;
+    for (let step = 0; step < width; step += 1) {
+      const x = reverse ? width - 1 - step : step;
+      const index = y * width + x;
+      const target = work[index];
+      const own = base[index];
+      if (!target || !own) continue;
+      const color = nearestPaletteColor(
+        [clampChannel(target[0]), clampChannel(target[1]), clampChannel(target[2])],
+        candidates,
+      );
+      result[index] = color.id;
+      if (!smooth[index]) continue;
+      const error: [number, number, number] = [
+        clampError((target[0] - color.rgb[0]) * strength, maxError),
+        clampError((target[1] - color.rgb[1]) * strength, maxError),
+        clampError((target[2] - color.rgb[2]) * strength, maxError),
+      ];
+      const direction = reverse ? -1 : 1;
+      spread(x + direction, y, error, 7 / 16, own);
+      spread(x - direction, y + 1, error, 3 / 16, own);
+      spread(x, y + 1, error, 5 / 16, own);
+      spread(x + direction, y + 1, error, 1 / 16, own);
+    }
+  }
+
+  return result;
+}
+
+function cellTargetColor(cell: SampledCell, profile: StyleProfile): [number, number, number] | null {
+  if (cell.backgroundShare >= profile.backgroundThreshold || !cell.average) return null;
+  // 双色交界：用主导色块的颜色，避免平均后产生中间色把边缘糊掉。
+  return dominantClusterColor(cell.samples) ?? cell.average;
+}
+
+/** 把格子内的采样分成两组；只有明显双色且其中一组占多数时，才返回主导色块的平均色。 */
+function dominantClusterColor(samples: Array<[number, number, number]>): [number, number, number] | null {
+  if (samples.length < 6) return null;
+  const average = meanColor(samples);
+  let seedA = samples[0];
+  let farthest = -1;
+  samples.forEach((sample) => {
+    const distance = colorDistance(sample, average);
+    if (distance > farthest) {
+      farthest = distance;
+      seedA = sample;
+    }
+  });
+  let seedB = samples[0];
+  let separation = -1;
+  samples.forEach((sample) => {
+    const distance = colorDistance(sample, seedA);
+    if (distance > separation) {
+      separation = distance;
+      seedB = sample;
+    }
+  });
+  // 颜色差异不够大，说明是平滑渐变或同色噪点，交给平均色 + 抖动处理。
+  if (separation < 60) return null;
+
+  let groupA: Array<[number, number, number]> = [];
+  let groupB: Array<[number, number, number]> = [];
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    groupA = [];
+    groupB = [];
+    samples.forEach((sample) => {
+      if (colorDistance(sample, seedA) <= colorDistance(sample, seedB)) groupA.push(sample);
+      else groupB.push(sample);
+    });
+    if (groupA.length === 0 || groupB.length === 0) return null;
+    seedA = meanColor(groupA);
+    seedB = meanColor(groupB);
+  }
+
+  const dominant = groupA.length >= groupB.length ? groupA : groupB;
+  if (dominant.length / samples.length < 0.32) return null;
+  return meanColor(dominant);
+}
+
+function meanColor(samples: Array<[number, number, number]>): [number, number, number] {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  samples.forEach((sample) => {
+    r += sample[0];
+    g += sample[1];
+    b += sample[2];
+  });
+  return [Math.round(r / samples.length), Math.round(g / samples.length), Math.round(b / samples.length)];
+}
+
+function clampChannel(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function clampError(value: number, limit: number): number {
+  return Math.max(-limit, Math.min(limit, value));
 }
 
 function reduceSpeckles(
