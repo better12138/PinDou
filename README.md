@@ -78,6 +78,43 @@ generated/dist/
 3. 将 `Build and deployment` 设置为 `GitHub Actions`。
 4. 之后每次推送到 `main` 都会自动构建并部署到 GitHub Pages。
 
+## 阿里云服务器部署
+
+```bash
+npm run build
+```
+
+把 `generated/dist/` 整个目录上传到服务器（例如 `/var/www/pindou`），用 Nginx 托管：
+
+```nginx
+server {
+  listen 80;
+  server_name 你的域名;
+  root /var/www/pindou;
+  index index.html;
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  location ~* \.(js|css|png|jpg|svg|woff2)$ {
+    expires 7d;
+  }
+}
+```
+
+访问根路径先看到落地页，点「开始制作」进入编辑器（地址带 `#app`）。
+
+### 兑换码
+
+```bash
+node scripts/generate-codes.cjs 50   # 生成 50 个兑换码，每行一个
+```
+
+- 每个兑换码兑换 1 次高清导出，兑换记录保存在用户浏览器本地。
+- 购买渠道与价格文案在 `src/product.ts` 里修改，上线前记得替换成自己的账号。
+- 校验逻辑是纯前端的，能防随手乱填，但挡不住刻意破解；需要强校验时再接后端。
+
 ## 文件结构
 
 ```text
@@ -98,9 +135,15 @@ scripts/
   post-build.cjs          # 拷贝样式和 vendor 文件，修正构建产物引用
   write-html.cjs          # 写入 GitHub Pages 使用的静态 HTML
   dev-server.cjs          # 本地静态预览服务
+  generate-codes.cjs      # 生成兑换码
 
 src/
   App.tsx                 # 应用状态、布局、顶部栏、左右面板和主要交互
+  LandingPage.tsx         # 落地页：介绍、功能、价格、常见问题
+  ProductShell.tsx        # 落地页与编辑器之间的切换
+  UnlockDialog.tsx        # 兑换码弹窗
+  license.ts              # 兑换码校验与导出次数
+  product.ts              # 价格与购买渠道文案
   WorkspaceCanvas.tsx     # 2D 画布、绘制工具、参考图、复制、移动和文字逻辑
   ThreePreview.tsx        # 3D 拼豆预览
   imageToBeads.ts         # 图片转拼豆图纸算法
@@ -226,6 +269,43 @@ Deployment steps:
 3. Set `Build and deployment` to `GitHub Actions`.
 4. Every push to `main` will build and deploy the site automatically.
 
+## Alibaba Cloud Deployment
+
+```bash
+npm run build
+```
+
+Upload `generated/dist/` (for example to `/var/www/pindou`) and serve it with Nginx:
+
+```nginx
+server {
+  listen 80;
+  server_name your.domain;
+  root /var/www/pindou;
+  index index.html;
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  location ~* \.(js|css|png|jpg|svg|woff2)$ {
+    expires 7d;
+  }
+}
+```
+
+The root path shows the landing page; "开始制作" opens the editor at `#app`.
+
+### Redemption codes
+
+```bash
+node scripts/generate-codes.cjs 50   # 50 codes, one per line
+```
+
+- Each code unlocks one high-resolution export; redeemed codes are stored in the buyer's browser.
+- Edit the sales channel and price copy in `src/product.ts` before going live.
+- Validation is client-side only: it stops typos and casual guessing, not a determined attacker. Add a backend if you need stronger enforcement.
+
 ## Project Structure
 
 ```text
@@ -246,9 +326,15 @@ scripts/
   post-build.cjs          # Copies styles/vendor files and fixes built imports
   write-html.cjs          # Writes the static HTML used by GitHub Pages
   dev-server.cjs          # Local static preview server
+  generate-codes.cjs      # Generates redemption codes
 
 src/
   App.tsx                 # App state, layout, panels, and main interactions
+  LandingPage.tsx         # Landing page: intro, features, pricing, FAQ
+  ProductShell.tsx        # Switches between landing page and editor
+  UnlockDialog.tsx        # Redemption code dialog
+  license.ts              # Code validation and export credits
+  product.ts              # Price and sales channel copy
   WorkspaceCanvas.tsx     # 2D editor canvas, tools, reference image, copy/move/text logic
   ThreePreview.tsx        # 3D bead preview
   imageToBeads.ts         # Image-to-bead conversion algorithm

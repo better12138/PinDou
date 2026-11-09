@@ -1,4 +1,4 @@
-import App from './App';
+import ProductShell from './ProductShell';
 
 type AppErrorBoundaryState = { error: Error | null };
 
@@ -28,7 +28,7 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, AppError
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <AppErrorBoundary>
-      <App />
+      <ProductShell />
     </AppErrorBoundary>
   </React.StrictMode>,
 );

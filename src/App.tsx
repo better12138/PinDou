@@ -1,5 +1,7 @@
 ﻿import WorkspaceCanvas from './WorkspaceCanvas';
 import ThreePreview from './ThreePreview';
+import UnlockDialog from './UnlockDialog';
+import { consumeCredit, getCredits, subscribeCredits } from './license';
 import { downloadPrintPdf, downloadPrintPng, downloadProjectJson, downloadUsageWorkbook } from './exporters';
 import type { PrintExportOptions } from './exporters';
 import { imageFileToBeads } from './imageToBeads';
@@ -150,6 +152,9 @@ const ui: Record<Language, any> = {
         packUnit: '包',
         noUsage: '暂无用量',
         brandCodes: '色号品牌',
+        creditsLeft: (count: number) => `剩余 ${count} 次`,
+        creditsTitle: '兑换码与导出次数',
+        noCredits: '导出需要 1 次额度，请先兑换。',
         view: '视图',
         beadShape: '豆子形状',
         roundBeads: '圆形',
@@ -378,6 +383,9 @@ const ui: Record<Language, any> = {
         packUnit: 'packs',
         noUsage: 'No usage yet',
         brandCodes: 'Brand codes',
+        creditsLeft: (count: number) => `${count} left`,
+        creditsTitle: 'Credits and redemption',
+        noCredits: 'Exports need 1 credit. Redeem a code first.',
         view: 'View',
         beadShape: 'Bead shape',
         roundBeads: 'Round',
@@ -565,6 +573,8 @@ export default function App() {
   const [textToolSize, setTextToolSize] = useState(17);
   const [textToolSpacing, setTextToolSpacing] = useState(1);
   const [showPrintExportPanel, setShowPrintExportPanel] = useState(false);
+  const [creditCount, setCreditCount] = useState(getCredits);
+  const [showUnlock, setShowUnlock] = useState(false);
   const [printExportOptions, setPrintExportOptions] = useState<PrintExportOptions>({
     format: 'png',
     exportBounds: 'pattern',
@@ -830,6 +840,19 @@ export default function App() {
 
   function updateProject(next: BeadProject) {
     setProject({ ...next, updatedAt: new Date().toISOString() });
+  }
+
+  useEffect(() => subscribeCredits(() => setCreditCount(getCredits())), []);
+
+  // 每次高清导出消耗 1 次额度；没有额度时打开兑换弹窗。
+  function ensureExportCredit(): boolean {
+    if (consumeCredit()) {
+      setCreditCount(getCredits());
+      return true;
+    }
+    setNotice(text.noCredits);
+    setShowUnlock(true);
+    return false;
   }
 
   function selectColor(colorId: string, options: { updateRecent?: boolean } = {}) {
@@ -1258,6 +1281,7 @@ export default function App() {
   }
 
   function exportUsageList() {
+    if (!ensureExportCredit()) return;
     downloadUsageWorkbook(project);
     setNotice(text.usageExported);
   }
@@ -1483,6 +1507,10 @@ export default function App() {
   }, [language]);
 
   function exportPrintPattern() {
+    if (!ensureExportCredit()) {
+      setShowPrintExportPanel(false);
+      return;
+    }
     const exportOptions = {
       ...printExportOptions,
       projectName: printExportOptions.projectName?.trim() || defaultPrintNickname,
@@ -1667,6 +1695,9 @@ export default function App() {
         </div>
 
         <div className="topbar-right">
+          <button className="credit-chip" type="button" title={text.creditsTitle} onClick={() => setShowUnlock(true)}>
+            {text.creditsLeft(creditCount)}
+          </button>
           <a
             className="github-link"
             href="https://github.com/Jett-Wu/Perler_Beads_Generator"
@@ -3064,6 +3095,7 @@ export default function App() {
           {floatingHelp.text}
         </div>
       )}
+      {showUnlock && <UnlockDialog onClose={() => setShowUnlock(false)} />}
     </main>
   );
 }
