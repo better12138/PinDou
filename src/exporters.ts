@@ -6,6 +6,12 @@ export type PrintExportOptions = {
   exportBounds?: 'pattern' | 'canvas';
   showColorCodes: boolean;
   showGuideLines: boolean;
+  /** PDF 按拼豆板分页，每页一块板，页脚带板号与该页色号索引。 */
+  paginateByBoard?: boolean;
+  /** 分页时的页眉说明，例如「第 2 / 6 页 · 板 1-2」。 */
+  pageLabel?: string;
+  /** 分页时这一块板在整张画布中的起点，用于坐标带显示全局编号。 */
+  origin?: { x: number; y: number };
   projectName?: string;
   authorName?: string;
   layerName?: string;
@@ -83,12 +89,83 @@ export function downloadPrintPng(project: BeadProject, options: PrintExportOptio
 export function downloadPrintPdf(project: BeadProject, options: PrintExportOptions = { showColorCodes: true, showGuideLines: true }): void {
   printLayerProjects(project, options).forEach((item) => {
     const layerOptions = { ...options, layerName: item.layerName };
-    const canvas = renderPrintCanvas(item.project, layerOptions);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.98);
-    const jpegBytes = dataUrlToBytes(dataUrl);
-    const pdf = createSingleImagePdf(jpegBytes, canvas.width, canvas.height, PRINT_EXPORT_PPI);
+    const pdf = createImagePdf(printPageImages(item.project, layerOptions), PRINT_EXPORT_PPI);
     downloadBlob(`${printFileName(layerOptions)}.pdf`, pdf, 'application/pdf');
   });
+}
+
+/** 渲染一页（或按板分页的多页）图纸，返回交给 PDF 的 JPEG。 */
+function printPageImages(
+  project: BeadProject,
+  options: PrintExportOptions,
+): Array<{ jpeg: Uint8Array; width: number; height: number }> {
+  if (!options.paginateByBoard) return [renderPageImage(project, options)];
+  const pages = boardPages(project);
+  if (pages.length <= 1) return [renderPageImage(project, options)];
+  return pages.map((page) =>
+    renderPageImage(page.project, {
+      ...options,
+      // 已经按板切好，交给渲染时不要再裁剪一次。
+      exportBounds: 'canvas',
+      origin: { x: page.originX, y: page.originY },
+      pageLabel: `\u7b2c ${page.index} / ${pages.length} \u9875 \u00b7 \u677f ${page.row + 1}-${page.column + 1}\uff08\u5171 ${page.rowCount} \u00d7 ${page.columnCount} \u5757\uff09`,
+    }),
+  );
+}
+
+function renderPageImage(project: BeadProject, options: PrintExportOptions): { jpeg: Uint8Array; width: number; height: number } {
+  const canvas = renderPrintCanvas(project, options);
+  return { jpeg: dataUrlToBytes(canvas.toDataURL('image/jpeg', 0.98)), width: canvas.width, height: canvas.height };
+}
+
+type BoardPage = {
+  project: BeadProject;
+  originX: number;
+  originY: number;
+  row: number;
+  column: number;
+  rowCount: number;
+  columnCount: number;
+  index: number;
+};
+
+/** 按拼豆板尺寸切成若干页，空板不出页（拼豆人不需要空板图纸）。 */
+function boardPages(project: BeadProject): BoardPage[] {
+  const boardWidth = Math.max(1, project.boardSettings.boardWidth);
+  const boardHeight = Math.max(1, project.boardSettings.boardHeight);
+  const columnCount = Math.ceil(project.width / boardWidth);
+  const rowCount = Math.ceil(project.height / boardHeight);
+  if (columnCount * rowCount <= 1) return [];
+  const pages: BoardPage[] = [];
+  for (let row = 0; row < rowCount; row += 1) {
+    for (let column = 0; column < columnCount; column += 1) {
+      const originX = column * boardWidth;
+      const originY = row * boardHeight;
+      const width = Math.min(boardWidth, project.width - originX);
+      const height = Math.min(boardHeight, project.height - originY);
+      const cells: Array<string | null> = Array.from({ length: width * height }, () => null);
+      let occupied = false;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const colorId = project.cells[(originY + y) * project.width + (originX + x)] ?? null;
+          cells[y * width + x] = colorId;
+          if (colorId) occupied = true;
+        }
+      }
+      if (!occupied) continue;
+      pages.push({
+        project: { ...project, width, height, cells },
+        originX,
+        originY,
+        row,
+        column,
+        rowCount,
+        columnCount,
+        index: pages.length + 1,
+      });
+    }
+  }
+  return pages;
 }
 
 function renderPrintCanvas(project: BeadProject, options: PrintExportOptions): HTMLCanvasElement {
@@ -130,7 +207,11 @@ function renderPrintCanvas(project: BeadProject, options: PrintExportOptions): H
   context.fillText(title, margin, margin + 16);
   context.fillStyle = '#6b7280';
   context.font = '12px Arial, "Microsoft YaHei", sans-serif';
-  context.fillText('Perler Beads Generator', margin, margin + 40);
+  context.fillText(
+    options.pageLabel ? `Perler Beads Generator \u00b7 ${options.pageLabel}` : 'Perler Beads Generator',
+    margin,
+    margin + 40,
+  );
   if (options.authorName?.trim()) {
     context.textAlign = 'right';
     context.fillStyle = '#4b5563';
@@ -138,7 +219,7 @@ function renderPrintCanvas(project: BeadProject, options: PrintExportOptions): H
     context.fillText(`Design by ${options.authorName.trim()}`, width - margin, margin + 28);
   }
 
-  drawCoordinateBands(context, printProject, gridLeft, gridTop, labelBand, cellSize);
+  drawCoordinateBands(context, printProject, gridLeft, gridTop, labelBand, cellSize, options.origin);
 
   for (let y = 0; y < printProject.height; y += 1) {
     for (let x = 0; x < printProject.width; x += 1) {
@@ -181,6 +262,7 @@ function drawCoordinateBands(
   gridTop: number,
   labelBand: number,
   cellSize: number,
+  origin: { x: number; y: number } = { x: 0, y: 0 },
 ): void {
   context.save();
   context.fillStyle = '#eef2f6';
@@ -192,7 +274,7 @@ function drawCoordinateBands(
 
   for (let x = 0; x < project.width; x += 1) {
     const left = gridLeft + x * cellSize;
-    const label = String(x + 1);
+    const label = String(x + 1 + origin.x);
     context.fillRect(left, gridTop - labelBand, cellSize, labelBand);
     context.strokeRect(left, gridTop - labelBand, cellSize, labelBand);
     context.fillRect(left, gridTop + project.height * cellSize, cellSize, labelBand);
@@ -205,7 +287,7 @@ function drawCoordinateBands(
 
   for (let y = 0; y < project.height; y += 1) {
     const top = gridTop + y * cellSize;
-    const label = String(y + 1);
+    const label = String(y + 1 + origin.y);
     context.fillRect(gridLeft - labelBand, top, labelBand, cellSize);
     context.strokeRect(gridLeft - labelBand, top, labelBand, cellSize);
     context.fillRect(gridLeft + project.width * cellSize, top, labelBand, cellSize);
@@ -686,7 +768,10 @@ function dataUrlToBytes(dataUrl: string): Uint8Array {
   return bytes;
 }
 
-function createSingleImagePdf(jpegBytes: Uint8Array, imageWidth: number, imageHeight: number, ppi: number): Blob {
+function createImagePdf(
+  pages: Array<{ jpeg: Uint8Array; width: number; height: number }>,
+  ppi: number,
+): Blob {
   const encoder = new TextEncoder();
   const parts: BlobPart[] = [];
   const offsets: number[] = [];
@@ -707,27 +792,36 @@ function createSingleImagePdf(jpegBytes: Uint8Array, imageWidth: number, imageHe
     pushText('\nendobj\n');
   };
 
-  const pageWidth = Math.max(480, (imageWidth / ppi) * 72);
-  const pageHeight = pageWidth * (imageHeight / imageWidth);
-  const content = `q\n${pageWidth.toFixed(2)} 0 0 ${pageHeight.toFixed(2)} 0 0 cm\n/Im0 Do\nQ`;
+  const objectCount = 2 + pages.length * 3;
+  const kids = pages.map((_, index) => `${3 + index * 3} 0 R`).join(' ');
 
   pushText('%PDF-1.4\n');
   object(1, ['<< /Type /Catalog /Pages 2 0 R >>']);
-  object(2, ['<< /Type /Pages /Kids [3 0 R] /Count 1 >>']);
-  object(3, [`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth.toFixed(2)} ${pageHeight.toFixed(2)}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`]);
-  object(4, [
-    `<< /Type /XObject /Subtype /Image /Width ${imageWidth} /Height ${imageHeight} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`,
-    jpegBytes,
-    '\nendstream',
-  ]);
-  object(5, [`<< /Length ${encoder.encode(content).length} >>\nstream\n${content}\nendstream`]);
+  object(2, [`<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>`]);
+  pages.forEach((page, index) => {
+    const pageId = 3 + index * 3;
+    const imageId = pageId + 1;
+    const contentId = pageId + 2;
+    const pageWidth = Math.max(480, (page.width / ppi) * 72);
+    const pageHeight = pageWidth * (page.height / page.width);
+    const content = `q\n${pageWidth.toFixed(2)} 0 0 ${pageHeight.toFixed(2)} 0 0 cm\n/Im0 Do\nQ`;
+    object(pageId, [
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth.toFixed(2)} ${pageHeight.toFixed(2)}] /Resources << /XObject << /Im0 ${imageId} 0 R >> >> /Contents ${contentId} 0 R >>`,
+    ]);
+    object(imageId, [
+      `<< /Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${page.jpeg.length} >>\nstream\n`,
+      page.jpeg,
+      '\nendstream',
+    ]);
+    object(contentId, [`<< /Length ${encoder.encode(content).length} >>\nstream\n${content}\nendstream`]);
+  });
 
   const xrefStart = length;
-  pushText('xref\n0 6\n0000000000 65535 f \n');
-  for (let id = 1; id <= 5; id += 1) {
+  pushText(`xref\n0 ${objectCount + 1}\n0000000000 65535 f \n`);
+  for (let id = 1; id <= objectCount; id += 1) {
     pushText(`${String(offsets[id]).padStart(10, '0')} 00000 n \n`);
   }
-  pushText(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
+  pushText(`trailer\n<< /Size ${objectCount + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
   return new Blob(parts, { type: 'application/pdf' });
 }
 

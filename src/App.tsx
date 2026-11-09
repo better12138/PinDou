@@ -5,6 +5,7 @@ import { consumeCredit, getCredits, subscribeCredits } from './license';
 import { downloadPrintPdf, downloadPrintPng, downloadProjectJson, downloadUsageWorkbook } from './exporters';
 import type { PrintExportOptions } from './exporters';
 import { imageFileToBeads } from './imageToBeads';
+import { clearSourceImage, loadSourceImage, saveSourceImage } from './sourceImage';
 import { cutoutPortrait } from './cutout';
 import { buildFrameRect, cropImageFile, detectPortraitFrame, drawFramePreview } from './autoframe';
 import type { FrameRect } from './autoframe';
@@ -49,6 +50,8 @@ const ui: Record<Language, any> = {
         printExportSettings: '图纸设置',
         showColorCodes: '显示色号',
         showGuideLines: '辅助线',
+        paginateByBoard: '按板分页',
+        paginateByBoardHint: 'PDF 每块拼豆板一页；页眉标注板号，图下方是该页的色号与颗数。',
         projectNickname: '作品昵称',
         authorNickname: '作者昵称',
         exportFormat: '导出格式',
@@ -286,6 +289,8 @@ const ui: Record<Language, any> = {
         printExportSettings: 'Pattern settings',
         showColorCodes: 'Color codes',
         showGuideLines: 'Guide lines',
+        paginateByBoard: 'One page per board',
+        paginateByBoardHint: 'Every pegboard gets its own PDF page with the board number in the header and that page\u2019s color list below.',
         projectNickname: 'Pattern name',
         authorNickname: 'Author name',
         exportFormat: 'Export format',
@@ -571,9 +576,10 @@ export default function App() {
   const jsonInputRef = useRef<HTMLInputElement | null>(null);
   const autoGenerateShouldCommitRef = useRef(false);
   const generationRequestRef = useRef(0);
-  // 记录最近一次「从图片生成」写进某图层的格子。画布改尺寸时，只有该图层仍是这份生成结果
-  // 才允许按新尺寸重新生成，避免覆盖用户后来手绘的内容。
-  const generatedCellsRef = useRef<{ layerId: string; cells: Array<string | null> } | null>(null);
+  // 原图生成到了哪个图层。改画板尺寸时只重算这一层，其他图层保持缩放。
+  const sourceLayerIdRef = useRef<string | null>(null);
+  // 刷新后从本地恢复的原图只用来支持「按新尺寸重新生成」，不应该立刻覆盖草稿。
+  const restoredSourceRef = useRef(false);
   const frameRequestRef = useRef(0);
   const framePreviewRef = useRef<HTMLCanvasElement | null>(null);
   const adjustmentSessionRef = useRef<{ layerId: string | null; baseCells: Array<string | null> }>({ layerId: null, baseCells: [] });
@@ -853,6 +859,11 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingFile) return;
+    // 刷新后恢复的原图只用于「改尺寸时按同一套算法重新生成」，不能立刻覆盖草稿里已有的图案。
+    if (restoredSourceRef.current) {
+      restoredSourceRef.current = false;
+      return;
+    }
     const timer = window.setTimeout(() => {
       const shouldCommit = autoGenerateShouldCommitRef.current;
       autoGenerateShouldCommitRef.current = false;
@@ -861,6 +872,26 @@ export default function App() {
     return () => window.clearTimeout(timer);
     // 只响应用户主动改宽度（tick），画布尺寸或同步引起的宽度变化不应触发重新生成。
   }, [pendingFile, convertWidthEditTick, maxColors, generationStyle, backgroundMode, tolerance, paletteMode, project.activeBrand]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadSourceImage()
+      .then((record) => {
+        if (cancelled || !record) return;
+        const file = new File([record.blob], record.name || 'source-image', { type: record.blob.type || 'image/png' });
+        sourceLayerIdRef.current = record.layerId || null;
+        restoredSourceRef.current = true;
+        setPendingFile(file);
+        setPendingImageUrl((current) => {
+          if (current) URL.revokeObjectURL(current);
+          return URL.createObjectURL(record.blob);
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!frameSession || !framePreviewRef.current) return;
@@ -1090,6 +1121,8 @@ export default function App() {
       if (current) URL.revokeObjectURL(current);
       return null;
     });
+    sourceLayerIdRef.current = null;
+    void clearSourceImage();
     setReferenceFile(null);
     setReferenceImageUrl((current) => {
       if (current) URL.revokeObjectURL(current);
@@ -1114,17 +1147,12 @@ export default function App() {
     if (width === project.width && height === project.height) return;
 
     const sourceProject = project;
-    const targetLayer = activeLayer;
-    const generated = generatedCellsRef.current;
-    // 有原图、且当前图层仍是上次生成的结果时，按新画板尺寸重新从原图生成；
-    // 直接对已量化的格子做缩放会丢掉描边、眼睛等小特征，看起来就是「糊」。
-    const canRegenerate = Boolean(
-      pendingFile &&
-        !targetLayer.locked &&
-        generated &&
-        generated.layerId === targetLayer.id &&
-        sameCells(generated.cells, targetLayer.cells),
-    );
+    // 原图只重算「当初生成它的那一层」，其他图层没有原图可依，只能等比缩放。
+    const imageLayer = sourceLayerIdRef.current
+      ? sourceProject.layers.find((layer) => layer.id === sourceLayerIdRef.current) ?? null
+      : null;
+    // 只要有原图，就用和导入完全相同的算法按新画板尺寸重算；缩已量化的格子必然丢细节。
+    const canRegenerate = Boolean(pendingFile && imageLayer && !imageLayer.locked);
 
     commitHistory();
     const scaledLayers = sourceProject.layers.map((layer) => ({
@@ -1174,8 +1202,9 @@ export default function App() {
       });
       if (requestId !== generationRequestRef.current) return;
       const cells = fitCellsIntoCanvas(result.cells, result.width, result.height, width, height);
-      const nextLayers = scaledLayers.map((layer) => (layer.id === targetLayer.id ? { ...layer, cells } : layer));
-      generatedCellsRef.current = { layerId: targetLayer.id, cells };
+      const nextLayers = scaledLayers.map((layer) => (layer.id === imageLayer!.id ? { ...layer, cells } : layer));
+      sourceLayerIdRef.current = imageLayer!.id;
+      void saveSourceImage(pendingFile, pendingFile.name, imageLayer!.id);
       commitLayers(nextLayers);
       setNotice(
         language === 'zh'
@@ -1216,6 +1245,8 @@ export default function App() {
     frameRequestRef.current += 1;
     setFrameSession(null);
     setIsFraming(false);
+    restoredSourceRef.current = false;
+    sourceLayerIdRef.current = null;
     setPendingFile(file);
     setPendingImageUrl((current) => {
       if (current) URL.revokeObjectURL(current);
@@ -1344,7 +1375,13 @@ export default function App() {
         return layer;
       });
       const generatedLayer = nextLayers.find((layer) => layer.id === targetLayerId);
-      generatedCellsRef.current = generatedLayer ? { layerId: targetLayerId, cells: generatedLayer.cells } : null;
+      if (generatedLayer) {
+        // 记住原图生成到了哪一层，并把原图留在本地：之后改画板尺寸（包括刷新之后）都能用同一套算法重算。
+        sourceLayerIdRef.current = targetLayerId;
+        void saveSourceImage(pendingFile, pendingFile.name, targetLayerId);
+      } else {
+        sourceLayerIdRef.current = null;
+      }
       const nextProject = {
         ...sourceProject,
         width: nextWidth,
@@ -1386,6 +1423,8 @@ export default function App() {
       if (current) URL.revokeObjectURL(current);
       return null;
     });
+    sourceLayerIdRef.current = null;
+    void clearSourceImage();
     setNotice(text.recordImported);
   }
 
@@ -1826,6 +1865,15 @@ export default function App() {
                         type="checkbox"
                         checked={printExportOptions.showGuideLines}
                         onChange={(event) => setPrintExportOptions((current) => ({ ...current, showGuideLines: event.target.checked }))}
+                      />
+                    </label>
+                    <label className="switch-row" title={text.paginateByBoardHint}>
+                      <span>{text.paginateByBoard}</span>
+                      <input
+                        type="checkbox"
+                        disabled={(printExportOptions.format ?? 'png') !== 'pdf'}
+                        checked={Boolean(printExportOptions.paginateByBoard)}
+                        onChange={(event) => setPrintExportOptions((current) => ({ ...current, paginateByBoard: event.target.checked }))}
                       />
                     </label>
                     <button className="export-submit-button" onClick={exportPrintPattern}>
@@ -3646,16 +3694,6 @@ function resizeCells(
     }
   }
   return next;
-}
-
-/** 两份格子是否完全一致：用来判断图层是否仍是上次从图片生成的结果。 */
-function sameCells(a: Array<string | null>, b: Array<string | null>): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) return false;
-  }
-  return true;
 }
 
 /**
