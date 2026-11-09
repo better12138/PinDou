@@ -44,8 +44,7 @@ const styleProfiles: Record<GenerationStyle, StyleProfile> = {
 
 export async function imageFileToBeads(file: File, options: ConvertOptions): Promise<ConvertResult> {
   const image = await loadImage(file);
-  const width = Math.max(1, Math.round(options.width));
-  const height = Math.max(1, Math.round((image.naturalHeight / image.naturalWidth) * width));
+  const { width, height } = resolveGridSize(image, options);
   const sourceWidth = Math.max(1, image.naturalWidth);
   const sourceHeight = Math.max(1, image.naturalHeight);
   const canvas = document.createElement('canvas');
@@ -74,6 +73,27 @@ export async function imageFileToBeads(file: File, options: ConvertOptions): Pro
   const colorsUsed = new Set(reducedCells.filter(Boolean)).size;
   const totalBeads = reducedCells.filter(Boolean).length;
   return { width, height, cells: reducedCells, colorsUsed, totalBeads };
+}
+
+/**
+ * 采样网格尺寸。宽度由用户给定，高度按原图比例；如果结果超出了画板边界
+ * （例如竖构图照片按画板宽度生成会高出画板），就按比例整体缩小到刚好放得下。
+ * 直接在缩小的目标尺寸上采样，比先生成大图再缩放清晰得多。
+ */
+function resolveGridSize(image: HTMLImageElement, options: ConvertOptions): { width: number; height: number } {
+  const naturalWidth = Math.max(1, image.naturalWidth);
+  const naturalHeight = Math.max(1, image.naturalHeight);
+  let width = Math.max(1, Math.round(options.width));
+  let height = Math.max(1, Math.round((naturalHeight / naturalWidth) * width));
+  const bounds = options.bounds;
+  if (bounds) {
+    const fitScale = Math.min(1, Math.max(1, bounds.width) / width, Math.max(1, bounds.height) / height);
+    if (fitScale < 1) {
+      width = Math.max(1, Math.floor(width * fitScale));
+      height = Math.max(1, Math.floor(height * fitScale));
+    }
+  }
+  return { width, height };
 }
 
 function loadImage(file: File): Promise<HTMLImageElement> {

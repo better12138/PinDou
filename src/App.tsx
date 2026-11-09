@@ -517,11 +517,20 @@ function formatBrushSize(value: number): string {
 }
 
 const sizePresets = [
+  { label: '29 * 29', width: 29, height: 29 },
   { label: '52 * 52', width: 52, height: 52 },
   { label: '78 * 78', width: 78, height: 78 },
   { label: '104 * 104', width: 104, height: 104 },
   { label: '156 * 156', width: 156, height: 156 },
 ];
+
+/** 拼豆人按板拼：直接告诉用户这个尺寸要几块板。 */
+function presetBoards(
+  preset: { width: number; height: number },
+  board: { boardWidth: number; boardHeight: number },
+): number {
+  return Math.ceil(preset.width / board.boardWidth) * Math.ceil(preset.height / board.boardHeight);
+}
 
 const defaultImportSettings = {
   width: 52,
@@ -562,6 +571,9 @@ export default function App() {
   const jsonInputRef = useRef<HTMLInputElement | null>(null);
   const autoGenerateShouldCommitRef = useRef(false);
   const generationRequestRef = useRef(0);
+  // 记录最近一次「从图片生成」写进某图层的格子。画布改尺寸时，只有该图层仍是这份生成结果
+  // 才允许按新尺寸重新生成，避免覆盖用户后来手绘的内容。
+  const generatedCellsRef = useRef<{ layerId: string; cells: Array<string | null> } | null>(null);
   const frameRequestRef = useRef(0);
   const framePreviewRef = useRef<HTMLCanvasElement | null>(null);
   const adjustmentSessionRef = useRef<{ layerId: string | null; baseCells: Array<string | null> }>({ layerId: null, baseCells: [] });
@@ -1096,28 +1108,94 @@ export default function App() {
     setNotice(language === 'zh' ? '画布已清空。' : 'Canvas cleared.');
   }
 
-  function resizeCanvas() {
-    const width = clampInteger(canvasWidth, 8, 180);
-    const height = clampInteger(canvasHeight, 8, 180);
+  async function resizeCanvas(targetWidth?: number, targetHeight?: number) {
+    const width = clampInteger(targetWidth ?? canvasWidth, 8, 180);
+    const height = clampInteger(targetHeight ?? canvasHeight, 8, 180);
     if (width === project.width && height === project.height) return;
 
+    const sourceProject = project;
+    const targetLayer = activeLayer;
+    const generated = generatedCellsRef.current;
+    // 有原图、且当前图层仍是上次生成的结果时，按新画板尺寸重新从原图生成；
+    // 直接对已量化的格子做缩放会丢掉描边、眼睛等小特征，看起来就是「糊」。
+    const canRegenerate = Boolean(
+      pendingFile &&
+        !targetLayer.locked &&
+        generated &&
+        generated.layerId === targetLayer.id &&
+        sameCells(generated.cells, targetLayer.cells),
+    );
+
     commitHistory();
-    const nextLayers = layers.map((layer) => ({
+    const scaledLayers = sourceProject.layers.map((layer) => ({
       ...layer,
-      cells: rescaleCellsToFit(layer.cells, project.width, project.height, width, height),
+      cells: rescaleCellsToFit(layer.cells, sourceProject.width, sourceProject.height, width, height),
     }));
-    updateProject({
-      ...project,
-      width,
-      height,
-      layers: nextLayers,
-      cells: composeVisibleCells(nextLayers, width, height),
-    });
+    const commitLayers = (nextLayers: typeof scaledLayers) => {
+      updateProject({
+        ...sourceProject,
+        width,
+        height,
+        layers: nextLayers,
+        cells: composeVisibleCells(nextLayers, width, height),
+      });
+    };
+
+    if (!pendingFile || !canRegenerate) {
+      commitLayers(scaledLayers);
+      setNotice(
+        language === 'zh'
+          ? `画布已调整为 ${width} * ${height}，图案已等比缩放并居中。`
+          : `Canvas resized to ${width} x ${height}; the pattern was scaled to fit and centered.`,
+      );
+      return;
+    }
+
+    const requestId = generationRequestRef.current + 1;
+    generationRequestRef.current = requestId;
+    const generateWidth = syncConvertWidth ? width : convertWidth;
+    setIsGenerating(true);
     setNotice(
       language === 'zh'
-        ? `画布已调整为 ${width} * ${height}，图案已等比缩放并居中。`
-        : `Canvas resized to ${width} x ${height}; the pattern was scaled to fit and centered.`,
+        ? `画布已调整为 ${width} * ${height}，正在按原图重新生成图案...`
+        : `Canvas resized to ${width} x ${height}; regenerating from the source image...`,
     );
+    try {
+      const result = await imageFileToBeads(pendingFile, {
+        width: generateWidth,
+        bounds: { width, height },
+        maxColors,
+        palette: activePalette,
+        generationStyle,
+        backgroundMode,
+        backgroundColor: [255, 255, 255],
+        tolerance,
+        speckleReduction: defaultImportSettings.speckleReduction,
+      });
+      if (requestId !== generationRequestRef.current) return;
+      const cells = fitCellsIntoCanvas(result.cells, result.width, result.height, width, height);
+      const nextLayers = scaledLayers.map((layer) => (layer.id === targetLayer.id ? { ...layer, cells } : layer));
+      generatedCellsRef.current = { layerId: targetLayer.id, cells };
+      commitLayers(nextLayers);
+      setNotice(
+        language === 'zh'
+          ? `画布已调整为 ${width} * ${height}，并按原图重新生成：${result.colorsUsed} 色 - ${result.totalBeads} 颗。`
+          : `Canvas resized to ${width} x ${height} and regenerated from the source image.`,
+      );
+    } catch (error) {
+      if (requestId !== generationRequestRef.current) return;
+      // 重新生成失败也要让新尺寸生效，避免输入框和画布不一致。
+      commitLayers(scaledLayers);
+      setNotice(
+        error instanceof Error
+          ? error.message
+          : language === 'zh'
+            ? '按原图重新生成失败，已改为等比缩放。'
+            : 'Regeneration failed; the pattern was scaled instead.',
+      );
+    } finally {
+      if (requestId === generationRequestRef.current) setIsGenerating(false);
+    }
   }
 
   function applyPreset(value: string) {
@@ -1125,6 +1203,8 @@ export default function App() {
     if (!preset) return;
     setCanvasWidth(preset.width);
     setCanvasHeight(preset.height);
+    // 选常用尺寸即应用，不必再点一次「应用」。
+    void resizeCanvas(preset.width, preset.height);
   }
 
   function handleImageFile(file: File) {
@@ -1239,6 +1319,8 @@ export default function App() {
     try {
       const result = await imageFileToBeads(pendingFile, {
         width: convertWidth,
+        // 先按画板大小收敛生成尺寸，再做居中，避免「先生成大图再缩小」造成的锯齿和细节丢失。
+        bounds: { width: sourceProject.width, height: sourceProject.height },
         maxColors,
         palette: activePalette,
         generationStyle,
@@ -1261,6 +1343,8 @@ export default function App() {
         }
         return layer;
       });
+      const generatedLayer = nextLayers.find((layer) => layer.id === targetLayerId);
+      generatedCellsRef.current = generatedLayer ? { layerId: targetLayerId, cells: generatedLayer.cells } : null;
       const nextProject = {
         ...sourceProject,
         width: nextWidth,
@@ -1627,17 +1711,41 @@ export default function App() {
           <div className="topbar-params canvas-params" aria-label="Canvas controls">
             <span className="topbar-control-label">{text.board}</span>
             <div className="topbar-dimension-group">
-              <input aria-label="Canvas width" type="number" min={8} max={180} value={canvasWidth} onChange={(event) => setCanvasWidth(Number(event.target.value))} />
+              <input
+                aria-label="Canvas width"
+                type="number"
+                min={8}
+                max={180}
+                value={canvasWidth}
+                onChange={(event) => setCanvasWidth(Number(event.target.value))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void resizeCanvas();
+                }}
+              />
               <span className="size-times">×</span>
-              <input aria-label="Canvas height" type="number" min={8} max={180} value={canvasHeight} onChange={(event) => setCanvasHeight(Number(event.target.value))} />
+              <input
+                aria-label="Canvas height"
+                type="number"
+                min={8}
+                max={180}
+                value={canvasHeight}
+                onChange={(event) => setCanvasHeight(Number(event.target.value))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void resizeCanvas();
+                }}
+              />
             </div>
             <select className="canvas-preset-select" aria-label="Canvas preset" value={selectedSizePreset || ''} onChange={(event) => applyPreset(event.target.value)}>
               <option value="" disabled hidden>{text.commonSizes}</option>
               {sizePresets.map((preset) => (
-                <option key={preset.label} value={preset.label}>{preset.label}</option>
+                <option key={preset.label} value={preset.label}>
+                  {language === 'zh'
+                    ? `${preset.label} · ${presetBoards(preset, project.boardSettings)} 块板`
+                    : `${preset.label} · ${presetBoards(preset, project.boardSettings)} boards`}
+                </option>
               ))}
             </select>
-            <button className="canvas-apply-button" onClick={resizeCanvas}>{text.apply}</button>
+            <button className="canvas-apply-button" onClick={() => void resizeCanvas()}>{text.apply}</button>
           </div>
 
           <div className="topbar-command-zone">
@@ -3538,6 +3646,16 @@ function resizeCells(
     }
   }
   return next;
+}
+
+/** 两份格子是否完全一致：用来判断图层是否仍是上次从图片生成的结果。 */
+function sameCells(a: Array<string | null>, b: Array<string | null>): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
 }
 
 /**

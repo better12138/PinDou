@@ -88,6 +88,8 @@ export type GenerationStyle = 'cartoon' | 'realistic';
 
 export type ConvertOptions = {
   width: number;
+  /** 生成结果必须完整放进的画板尺寸；超出时按比例缩小，避免生成后再缩放导致糊边。 */
+  bounds?: { width: number; height: number };
   maxColors: number;
   palette?: PaletteColor[];
   backgroundMode: BackgroundMode;
