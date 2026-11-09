@@ -186,6 +186,8 @@ const ui: Record<Language, any> = {
         expandPreview: '放大 3D 预览',
         workspaceReady: '工作区已就绪。',
         heightFromRatio: '高度将按图片比例计算。',
+        syncBoardWidth: '与拼豆板宽度同步',
+        syncBoardWidthHint: '图片生成宽度跟随当前拼豆板宽度；关闭后可手动设置。',
         status: (width: number, height: number, beads: number, colors: number) => `${width} * ${height} - ${beads} 颗 - ${colors} 色`,
         panelStatus: (width: number, height: number, colors: number, beads: number, boards: number) => `${width} * ${height} - ${colors} 色 - ${beads} 颗 - ${boards} 块板`,
         isolatedBeads: (count: number) => (count > 0 ? `${count} 颗拼豆无相邻，熨烫时留意。` : '没有无相邻拼豆。'),
@@ -421,6 +423,8 @@ const ui: Record<Language, any> = {
         expandPreview: 'Expand 3D preview',
         workspaceReady: 'Workspace ready.',
         heightFromRatio: 'Height is calculated from the image ratio.',
+        syncBoardWidth: 'Sync with board width',
+        syncBoardWidthHint: 'Generation width follows the board width; turn off to set it manually.',
         status: (width: number, height: number, beads: number, colors: number) => `${width} * ${height} - ${beads} beads - ${colors} colors`,
         panelStatus: (width: number, height: number, colors: number, beads: number, boards: number) => `${width} * ${height} - ${colors} colors - ${beads} beads - ${boards} boards`,
         isolatedBeads: (count: number) => (count > 0 ? `${count} beads have no neighbors; watch when fusing.` : 'No beads without neighbors.'),
@@ -617,6 +621,7 @@ export default function App() {
   const [canvasWidth, setCanvasWidth] = useState(project.width);
   const [canvasHeight, setCanvasHeight] = useState(project.height);
   const [convertWidth, setConvertWidth] = useState(defaultImportSettings.width);
+  const [syncConvertWidth, setSyncConvertWidth] = useState(true);
   const [maxColors, setMaxColors] = useState(defaultImportSettings.maxColors);
   const [generationStyle, setGenerationStyle] = useState<GenerationStyle>(defaultImportSettings.generationStyle);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(defaultImportSettings.backgroundMode);
@@ -792,6 +797,11 @@ export default function App() {
       if (referenceImageUrl) URL.revokeObjectURL(referenceImageUrl);
     };
   }, [referenceImageUrl]);
+
+  // 同步开关开启时，图片生成宽度跟随当前拼豆板宽度。
+  useEffect(() => {
+    if (syncConvertWidth) setConvertWidth(project.width);
+  }, [syncConvertWidth, project.width]);
 
   useEffect(() => {
     setCanvasWidth(project.width);
@@ -1871,7 +1881,19 @@ export default function App() {
                 {text.width}
                 <span className="help-dot image-help-dot" {...imageHelpProps(text.heightFromRatio)}>?</span>
               </span>
-              <input aria-label="Output width" type="number" min={8} max={180} value={convertWidth} onChange={(event) => setConvertWidth(Number(event.target.value))} />
+              <input
+                aria-label="Output width"
+                type="number"
+                min={8}
+                max={180}
+                disabled={syncConvertWidth}
+                value={convertWidth}
+                onChange={(event) => setConvertWidth(Number(event.target.value))}
+              />
+            </label>
+            <label className="checkline image-sync-width" title={text.syncBoardWidthHint}>
+              <input type="checkbox" checked={syncConvertWidth} onChange={(event) => setSyncConvertWidth(event.target.checked)} />
+              <span>{text.syncBoardWidth}</span>
             </label>
             <label className="image-range-field">
               <span>

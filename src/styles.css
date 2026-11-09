@@ -1786,6 +1786,18 @@ button:focus-visible {
   align-items: center;
 }
 
+.image-field-grid .image-sync-width {
+  gap: 7px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.image-number-field input:disabled {
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  cursor: default;
+}
+
 .image-range-field > span {
   display: flex;
   align-items: center;
