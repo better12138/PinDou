@@ -533,7 +533,7 @@ function linkNearestCodes(colors: PaletteColor[], source: PaletteColor[], brand:
     let best = source[0];
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const candidate of source) {
-      const distance = colorDistance(color.rgb, candidate.rgb);
+      const distance = colorDistanceLab(color.rgb, candidate.rgb);
       if (distance < bestDistance) {
         best = candidate;
         bestDistance = distance;
@@ -542,10 +542,6 @@ function linkNearestCodes(colors: PaletteColor[], source: PaletteColor[], brand:
     color.codes[brand] = best.primaryCode;
   }
 }
-
-linkNearestCodes(basicPalette, artkalPalette, 'ARTKAL');
-linkNearestCodes(completePalette, artkalPalette, 'ARTKAL');
-linkNearestCodes(artkalPalette, completePalette, 'MARD');
 
 const colorIndex = new Map<string, PaletteColor>();
 for (const color of completePalette) colorIndex.set(color.id, color);
@@ -581,7 +577,7 @@ export function nearestPaletteColor(
   let best = candidates[0];
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const color of candidates) {
-    const distance = colorDistance(rgb, color.rgb);
+    const distance = colorDistanceLab(rgb, color.rgb);
     if (distance < bestDistance) {
       best = color;
       bestDistance = distance;
@@ -599,6 +595,109 @@ export function colorDistance(a: [number, number, number], b: [number, number, n
   return Math.sqrt((2 + redMean / 256) * r * r + 4 * g * g + (2 + (255 - redMean) / 256) * blue * blue);
 }
 
+type Lab = [number, number, number];
+
+// Lab 转换按 24bit RGB 缓存：色板匹配会对同一批像素反复比较，转换一次即可。
+const labCache = new Map<number, Lab>();
+
+function labOf(rgb: [number, number, number]): Lab {
+  const key = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+  const cached = labCache.get(key);
+  if (cached) return cached;
+  const lab = rgbToLab(rgb);
+  labCache.set(key, lab);
+  return lab;
+}
+
+function rgbToLab(rgb: [number, number, number]): Lab {
+  const r = srgbToLinear(rgb[0]);
+  const g = srgbToLinear(rgb[1]);
+  const b = srgbToLinear(rgb[2]);
+  // sRGB (D65) → XYZ → Lab
+  const x = labPivot((r * 0.4124564 + g * 0.3575761 + b * 0.1804375) / 0.95047);
+  const y = labPivot(r * 0.2126729 + g * 0.7151522 + b * 0.0721750);
+  const z = labPivot((r * 0.0193339 + g * 0.1191920 + b * 0.9503041) / 1.08883);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+
+function srgbToLinear(channel: number): number {
+  const value = channel / 255;
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+function labPivot(value: number): number {
+  return value > 0.008856 ? Math.cbrt(value) : 7.787 * value + 16 / 116;
+}
+
+/**
+ * 人眼感知色差（CIEDE2000），用于“找最接近的拼豆色”。
+ * 注意：不要拿它和 `colorDistance` 的阈值比较——阈值逻辑仍按 RGB 距离标定。
+ */
+export function colorDistanceLab(a: [number, number, number], b: [number, number, number]): number {
+  return deltaE2000(labOf(a), labOf(b));
+}
+
+function deltaE2000(lab1: Lab, lab2: Lab): number {
+  const [l1, a1, b1] = lab1;
+  const [l2, a2, b2] = lab2;
+  const c1 = Math.hypot(a1, b1);
+  const c2 = Math.hypot(a2, b2);
+  const cBar = (c1 + c2) / 2;
+  const g = 0.5 * (1 - Math.sqrt(cBar ** 7 / (cBar ** 7 + 25 ** 7)));
+  const a1p = (1 + g) * a1;
+  const a2p = (1 + g) * a2;
+  const c1p = Math.hypot(a1p, b1);
+  const c2p = Math.hypot(a2p, b2);
+  const h1p = hueAngle(b1, a1p);
+  const h2p = hueAngle(b2, a2p);
+  const dLp = l2 - l1;
+  const dCp = c2p - c1p;
+  let dhp = 0;
+  if (c1p * c2p !== 0) {
+    dhp = h2p - h1p;
+    if (dhp > 180) dhp -= 360;
+    else if (dhp < -180) dhp += 360;
+  }
+  const dHp = 2 * Math.sqrt(c1p * c2p) * Math.sin((dhp * Math.PI) / 360);
+  const lBarP = (l1 + l2) / 2;
+  const cBarP = (c1p + c2p) / 2;
+  let hBarP = h1p + h2p;
+  if (c1p * c2p !== 0) {
+    if (Math.abs(h1p - h2p) <= 180) hBarP = (h1p + h2p) / 2;
+    else if (h1p + h2p < 360) hBarP = (h1p + h2p + 360) / 2;
+    else hBarP = (h1p + h2p - 360) / 2;
+  }
+  const t =
+    1 -
+    0.17 * Math.cos(((hBarP - 30) * Math.PI) / 180) +
+    0.24 * Math.cos((2 * hBarP * Math.PI) / 180) +
+    0.32 * Math.cos(((3 * hBarP + 6) * Math.PI) / 180) -
+    0.2 * Math.cos(((4 * hBarP - 63) * Math.PI) / 180);
+  const dTheta = 30 * Math.exp(-(((hBarP - 275) / 25) ** 2));
+  const rc = 2 * Math.sqrt(cBarP ** 7 / (cBarP ** 7 + 25 ** 7));
+  const sl = 1 + (0.015 * (lBarP - 50) ** 2) / Math.sqrt(20 + (lBarP - 50) ** 2);
+  const sc = 1 + 0.045 * cBarP;
+  const sh = 1 + 0.015 * cBarP * t;
+  const rt = -Math.sin((2 * dTheta * Math.PI) / 180) * rc;
+  return Math.sqrt(
+    (dLp / sl) ** 2 +
+      (dCp / sc) ** 2 +
+      (dHp / sh) ** 2 +
+      rt * (dCp / sc) * (dHp / sh),
+  );
+}
+
+function hueAngle(b: number, a: number): number {
+  if (a === 0 && b === 0) return 0;
+  const angle = (Math.atan2(b, a) * 180) / Math.PI;
+  return angle >= 0 ? angle : angle + 360;
+}
+
 export function mappedCode(color: PaletteColor, brand: BrandId): string {
   return color.codes[brand] ?? color.primaryCode;
 }
+
+// 放在文件末尾执行：颜色匹配依赖上方 Lab 缓存的初始化，提前调用会触发 TDZ。
+linkNearestCodes(basicPalette, artkalPalette, 'ARTKAL');
+linkNearestCodes(completePalette, artkalPalette, 'ARTKAL');
+linkNearestCodes(artkalPalette, completePalette, 'MARD');

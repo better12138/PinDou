@@ -151,6 +151,8 @@ export default function WorkspaceCanvas({
     lastCellY: -1,
     lastGridX: 0,
     lastGridY: 0,
+    // hover 只在格子真正变化时才更新状态，避免每像素都触发重绘和 App 重渲染。
+    hoverKey: 'none' as string,
     moveStartCellX: 0,
     moveStartCellY: 0,
     moveLastDx: 0,
@@ -220,7 +222,12 @@ export default function WorkspaceCanvas({
     fitToWindow();
   }, [project.width, project.height, cellSize]);
 
-  useEffect(() => {
+  // 重绘函数放在 ref 里：ResizeObserver 只订阅挂载/卸载，鼠标移动不会反复重建 observer。
+  const paintRef = useRef<() => void>(() => {});
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
+
+  function paintCanvas(): void {
     draftCellsRef.current = getActiveLayerCells(project);
     const canvas = canvasRef.current;
     const wrapper = wrapperRef.current;
@@ -228,37 +235,37 @@ export default function WorkspaceCanvas({
     const context = canvas.getContext('2d');
     if (!context) return;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(wrapper.clientWidth * dpr);
-    canvas.height = Math.floor(wrapper.clientHeight * dpr);
-    canvas.style.width = `${wrapper.clientWidth}px`;
-    canvas.style.height = `${wrapper.clientHeight}px`;
+    const width = Math.floor(wrapper.clientWidth * dpr);
+    const height = Math.floor(wrapper.clientHeight * dpr);
+    // 只有容器尺寸真正变化时才重置画布缓冲；否则每次重绘都会清空位图并丢掉浏览器的绘制缓存。
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      canvas.style.width = `${wrapper.clientWidth}px`;
+      canvas.style.height = `${wrapper.clientHeight}px`;
+    }
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     drawPattern(context, project, cellSize, zoom, pan, highlightedColorId, highlightedCellIndices, tool, selectedColorId, eraserSize, moveMode, removeMode, mirrorMode, clipboardPattern, copyMode, copySelectionIndices, shapeDraft, hoverPoint, canEdit, referenceImageOptions, textToolValue, textToolDirection, textToolSize, textToolSpacing, formatColorCode);
+  }
+  paintRef.current = paintCanvas;
+
+  useEffect(() => {
+    // 合并同一帧内的多次状态变化，一次 pointermove 链只触发一次重绘。
+    const frame = requestAnimationFrame(() => paintRef.current());
+    return () => cancelAnimationFrame(frame);
   }, [project, cellSize, zoom, pan, highlightedColorId, highlightedCellIndices, tool, selectedColorId, eraserSize, moveMode, removeMode, mirrorMode, clipboardPattern, copyMode, copySelectionIndices, shapeKind, shapeDraft, hoverPoint, canEdit, referenceImageOptions, textToolValue, textToolDirection, textToolSize, textToolSpacing, formatColorCode]);
 
   useEffect(() => {
     const observer = new ResizeObserver(() => {
-      const canvas = canvasRef.current;
-      const wrapper = wrapperRef.current;
-      if (!canvas || !wrapper) return;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(wrapper.clientWidth * dpr);
-      canvas.height = Math.floor(wrapper.clientHeight * dpr);
-      canvas.style.width = `${wrapper.clientWidth}px`;
-      canvas.style.height = `${wrapper.clientHeight}px`;
-      const context = canvas.getContext('2d');
-      if (context) {
-        context.setTransform(dpr, 0, 0, dpr, 0, 0);
-        drawPattern(context, project, cellSize, zoom, pan, highlightedColorId, highlightedCellIndices, tool, selectedColorId, eraserSize, moveMode, removeMode, mirrorMode, clipboardPattern, copyMode, copySelectionIndices, shapeDraft, hoverPoint, canEdit, referenceImageOptions, textToolValue, textToolDirection, textToolSize, textToolSpacing, formatColorCode);
-      }
+      paintRef.current();
       setPan((current) => {
-        const next = constrainPan(current, zoom);
+        const next = constrainPan(current, zoomRef.current);
         return almostSamePoint(current, next) ? current : next;
       });
     });
     if (wrapperRef.current) observer.observe(wrapperRef.current);
     return () => observer.disconnect();
-  }, [project, cellSize, zoom, pan, highlightedColorId, highlightedCellIndices, tool, selectedColorId, eraserSize, moveMode, removeMode, mirrorMode, clipboardPattern, copyMode, copySelectionIndices, shapeKind, shapeDraft, hoverPoint, canEdit, referenceImageOptions, textToolValue, textToolDirection, textToolSize, textToolSpacing, formatColorCode]);
+  }, []);
 
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
     const point = canvasToGridPoint(event.clientX, event.clientY);
@@ -455,6 +462,15 @@ export default function WorkspaceCanvas({
     applyTool(cell.x, cell.y, pointerRef.current.lastGridX, pointerRef.current.lastGridY);
   }
 
+  function updateHover(point: PointerGridPoint | null) {
+    const cell = point?.cell ?? null;
+    const key = point ? (cell ? `${cell.x},${cell.y}` : 'outside') : 'none';
+    if (pointerRef.current.hoverKey === key) return;
+    pointerRef.current.hoverKey = key;
+    setHoverPoint(point);
+    onHover(cell ? { ...cell, colorId: getTopVisibleColor(project, cell.y * project.width + cell.x) } : null);
+  }
+
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
     if (pointerRef.current.draggingReference) {
       const dx = (event.clientX - pointerRef.current.lastX) / (cellSize * zoom);
@@ -481,8 +497,7 @@ export default function WorkspaceCanvas({
 
     const point = canvasToGridPoint(event.clientX, event.clientY, pointerRef.current.movingPattern);
     const cell = point?.cell ?? null;
-    setHoverPoint(point);
-    onHover(cell ? { ...cell, colorId: getTopVisibleColor(project, cell.y * project.width + cell.x) } : null);
+    updateHover(point);
     if (pointerRef.current.copySelecting) {
       if (cell) {
         applyCopySelection(linePoints(pointerRef.current.lastCellX, pointerRef.current.lastCellY, cell.x, cell.y));
@@ -586,6 +601,7 @@ export default function WorkspaceCanvas({
   }
 
   function handlePointerLeave() {
+    pointerRef.current.hoverKey = 'none';
     setHoverPoint(null);
     onHover(null);
   }

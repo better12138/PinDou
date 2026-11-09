@@ -1,6 +1,11 @@
 import { getColor } from './palette';
 import type { BeadProject, UsageRow } from './types';
 
+/** 拼豆行业惯例：按用量 +10% 备货，抵消掉豆与熨烫损耗。 */
+export function suggestStock(count: number, ratio = 1.1): number {
+  return Math.ceil(count * ratio);
+}
+
 export function summarizeUsage(project: BeadProject): UsageRow[] {
   const usageLayers = (project.layers ?? []).filter((layer) => layer.includeInUsage);
   const counts = new Map<string, number>();

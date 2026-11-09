@@ -59,6 +59,8 @@ export type BoardSettings = {
   boardWidth: number;
   boardHeight: number;
   showBoardIds: boolean;
+  /** 单颗拼豆直径（毫米），用于换算成品物理尺寸。 */
+  beadSizeMm: number;
 };
 
 export type BeadProject = {

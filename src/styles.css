@@ -2924,6 +2924,92 @@ button:focus-visible {
   gap: 8px;
 }
 
+.board-spec-field {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 252, 246, 0.72);
+}
+
+.board-spec-head {
+  display: grid;
+  gap: 2px;
+}
+
+.board-spec-head strong {
+  color: var(--text);
+  font-size: var(--font-size-body);
+  font-weight: var(--weight-semibold);
+}
+
+.board-spec-head small,
+.board-spec-meta,
+.board-spec-diameter {
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.35;
+}
+
+.board-spec-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.board-spec-presets > button,
+.board-spec-custom > button {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(250, 247, 239, 0.9);
+  color: #344044;
+  font-size: var(--font-size-caption);
+  font-weight: var(--weight-semibold);
+}
+
+.board-spec-presets > button.active {
+  border-color: rgba(54, 102, 108, 0.6);
+  background: rgba(54, 102, 108, 0.12);
+  color: #23555b;
+}
+
+.board-spec-diameter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.board-spec-diameter input,
+.board-spec-custom input {
+  width: 56px;
+  min-height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  text-align: right;
+}
+
+.board-spec-custom {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.board-spec-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .view-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3100,7 +3186,7 @@ button:focus-visible {
 
 .usage-overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 7px;
 }
 
@@ -3474,6 +3560,18 @@ button:focus-visible {
 }
 
 .usage-count small {
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.usage-count .usage-stock-hint {
+  color: #2f7a6b;
+  font-weight: var(--weight-semibold);
+}
+
+.usage-stock-note {
+  display: block;
+  margin-top: -4px;
   color: var(--text-muted);
   font-size: var(--font-size-caption);
 }

@@ -1,5 +1,5 @@
 import { paletteVersion } from './palette';
-import type { BeadLayer, BeadProject } from './types';
+import type { BeadLayer, BeadProject, BoardSettings } from './types';
 
 export const autosaveKey = 'perler-beads-generator:draft';
 
@@ -43,6 +43,7 @@ export function createProject(width = 52, height = 52, name = 'Untitled Pattern'
       boardWidth: 52,
       boardHeight: 52,
       showBoardIds: true,
+      beadSizeMm: 5,
     },
     createdAt: now,
     updatedAt: now,
@@ -118,7 +119,7 @@ export function normalizeProject(project: BeadProject): BeadProject {
       ...fallback,
       ...project,
       settings,
-      boardSettings: { ...fallback.boardSettings, ...project.boardSettings },
+      boardSettings: normalizeBoardSettings(project.boardSettings),
       layers: project.layers?.length ? project.layers : fallback.layers,
     },
     width,
@@ -131,11 +132,31 @@ export function normalizeProject(project: BeadProject): BeadProject {
     height,
     activeBrand: project.activeBrand === 'ARTKAL' ? 'ARTKAL' : 'MARD',
     settings,
-    boardSettings: { ...fallback.boardSettings, ...project.boardSettings },
+    boardSettings: normalizeBoardSettings(project.boardSettings),
     layers,
     activeLayerId: layers.some((layer) => layer.id === project.activeLayerId) ? project.activeLayerId : layers[0].id,
     cells: composeVisibleCells(layers, width, height),
   };
+}
+
+/** 兼容旧草稿：板规格缺失或非法时回落到 52×52 小板 / 5mm 豆。 */
+function normalizeBoardSettings(settings: Partial<BoardSettings> | undefined): BoardSettings {
+  const source = settings ?? {};
+  return {
+    boardWidth: clampInteger(source.boardWidth, 1, 200, 52),
+    boardHeight: clampInteger(source.boardHeight, 1, 200, 52),
+    showBoardIds: source.showBoardIds !== false,
+    beadSizeMm:
+      typeof source.beadSizeMm === 'number' && Number.isFinite(source.beadSizeMm)
+        ? Math.min(15, Math.max(1, source.beadSizeMm))
+        : 5,
+  };
+}
+
+function clampInteger(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = Math.round(Number(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function normalizeLayers(project: BeadProject, width: number, height: number): BeadLayer[] {

@@ -11,7 +11,7 @@ import { buildFrameRect, cropImageFile, detectPortraitFrame, drawFramePreview } 
 import type { FrameRect } from './autoframe';
 import { artkalPalette, basicPalette, colorDistance, completePalette, getColor, mappedCode, nearestPaletteColor } from './palette';
 import { composeVisibleCells, createLayer, createProject, loadDraft, normalizeProject, saveDraft, withCells, withLayers } from './project';
-import { findIsolatedBeads, summarizeUsage } from './usage';
+import { findIsolatedBeads, suggestStock, summarizeUsage } from './usage';
 import type { ArrowKind, BackgroundMode, BeadProject, ClipboardPattern, CopyMode, GenerationStyle, MirrorDirection, MoveMode, RemoveMode, RightClickAction, ShapeFillMode, ShapeKind, TextDirection, ToolId } from './types';
 
 const { useEffect, useMemo, useRef, useState } = React;
@@ -26,6 +26,14 @@ const ui: Record<Language, any> = {
         board: '拼豆板',
         apply: '应用',
         commonSizes: '常用尺寸',
+        boardSpec: '拼豆板规格',
+        boardSpecHint: '分板线、板数与 PDF 分页都按实物板规格计算。',
+        boardSpecCustom: '自定义',
+        beadDiameter: '豆子直径',
+        beadDiameterUnit: 'mm',
+        physicalSize: (width: string, height: string) => `成品约 ${width} × ${height} cm`,
+        stockSuggest: '备货建议',
+        stockSuggestHint: '按用量 +10% 估算，抵消掉豆与熨烫损耗。',
         rightClick: '右键',
         rightClickHint: '右键平移用于拖动画布；右键擦除只清除落点格子，不受橡皮大小影响。',
         pan: '平移',
@@ -265,6 +273,14 @@ const ui: Record<Language, any> = {
         board: 'Pegboard',
         apply: 'Apply',
         commonSizes: 'Common sizes',
+        boardSpec: 'Pegboard spec',
+        boardSpecHint: 'Board guides, board count and PDF pagination follow the physical pegboard size.',
+        boardSpecCustom: 'Custom',
+        beadDiameter: 'Bead diameter',
+        beadDiameterUnit: 'mm',
+        physicalSize: (width: string, height: string) => `Finished ~${width} × ${height} cm`,
+        stockSuggest: 'Suggested stock',
+        stockSuggestHint: 'Usage +10% to cover dropped beads and ironing loss.',
         rightClick: 'Right click',
         rightClickHint: 'Right-click pan drags the canvas; right-click erase clears only the pointed cell and ignores eraser size.',
         pan: 'Pan',
@@ -537,6 +553,11 @@ function presetBoards(
   return Math.ceil(preset.width / board.boardWidth) * Math.ceil(preset.height / board.boardHeight);
 }
 
+/** 格子数 × 豆径(mm) → 成品厘米数，保留 1 位小数。 */
+function beadSizeCm(beadCount: number, beadSizeMm: number): string {
+  return ((beadCount * beadSizeMm) / 10).toFixed(1);
+}
+
 const defaultImportSettings = {
   width: 52,
   maxColors: 24,
@@ -605,6 +626,10 @@ export default function App() {
   const [showPrintExportPanel, setShowPrintExportPanel] = useState(false);
   const [creditCount, setCreditCount] = useState(getCredits);
   const [showUnlock, setShowUnlock] = useState(false);
+  const [boardSizeDraft, setBoardSizeDraft] = useState({
+    width: project.boardSettings.boardWidth,
+    height: project.boardSettings.boardHeight,
+  });
   const [pendingExport, setPendingExport] = useState<'pattern' | 'usage' | null>(null);
   const [printExportOptions, setPrintExportOptions] = useState<PrintExportOptions>({
     format: 'png',
@@ -676,9 +701,13 @@ export default function App() {
   const usage = useMemo(() => summarizeUsage(project), [project]);
   const totalBeads = usage.reduce((sum, row) => sum + row.count, 0);
   const totalPacks = usage.reduce((sum, row) => sum + row.packs, 0);
-  const boardCount =
-    Math.ceil(project.width / project.boardSettings.boardWidth) *
-    Math.ceil(project.height / project.boardSettings.boardHeight);
+  const boardColumns = Math.ceil(project.width / Math.max(1, project.boardSettings.boardWidth));
+  const boardRows = Math.ceil(project.height / Math.max(1, project.boardSettings.boardHeight));
+  const boardCount = boardColumns * boardRows;
+  const beadSizeMm = project.boardSettings.beadSizeMm ?? 5;
+  const finishedWidthCm = beadSizeCm(project.width, beadSizeMm);
+  const finishedHeightCm = beadSizeCm(project.height, beadSizeMm);
+  const totalStock = usage.reduce((sum, row) => sum + suggestStock(row.count), 0);
   const isolatedBeadRefs = useMemo(() => findIsolatedBeads(project), [project]);
   const isolatedBeads = isolatedBeadRefs.length;
   const isolatedCellIndices = useMemo(
@@ -1507,6 +1536,7 @@ export default function App() {
   function toggleActiveLayerOnly() {
     const shouldEnable = !project.settings.showActiveLayerOnly;
     if (shouldEnable) {
+      commitHistory();
       soloVisibilitySnapshotRef.current = Object.fromEntries(layers.map((layer) => [layer.id, layer.visible]));
       const soloLayers = layers.map((layer) => ({
         ...layer,
@@ -1521,6 +1551,7 @@ export default function App() {
       return;
     }
 
+    commitHistory();
     const snapshot = soloVisibilitySnapshotRef.current;
     soloVisibilitySnapshotRef.current = null;
     const restoredLayers = layers.map((layer) => ({
@@ -1607,6 +1638,35 @@ export default function App() {
           ? current - step
           : Math.floor(current / step) * step;
     setBeadsPerPack(Math.max(step, next));
+  }
+
+  useEffect(() => {
+    setBoardSizeDraft({
+      width: project.boardSettings.boardWidth,
+      height: project.boardSettings.boardHeight,
+    });
+  }, [project.boardSettings.boardWidth, project.boardSettings.boardHeight]);
+
+  function applyBoardSize(width: number, height: number) {
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+    const nextWidth = clampInteger(width, 1, 200);
+    const nextHeight = clampInteger(height, 1, 200);
+    if (nextWidth === project.boardSettings.boardWidth && nextHeight === project.boardSettings.boardHeight) return;
+    updateProject({
+      ...project,
+      boardSettings: { ...project.boardSettings, boardWidth: nextWidth, boardHeight: nextHeight },
+    });
+  }
+
+  function setBeadSizeMm(value: number) {
+    if (!Number.isFinite(value)) return;
+    // 2.6mm 迷你豆很常见，这里按 0.1mm 保留小数，不做取整。
+    const next = Math.round(Math.min(15, Math.max(1, value)) * 10) / 10;
+    if (next === project.boardSettings.beadSizeMm) return;
+    updateProject({
+      ...project,
+      boardSettings: { ...project.boardSettings, beadSizeMm: next },
+    });
   }
 
   const layers = project.layers?.length ? project.layers : createProject(project.width, project.height).layers;
@@ -2696,6 +2756,7 @@ export default function App() {
             <span>
               {text.panelStatus(project.width, project.height, usage.length, totalBeads, boardCount)}
             </span>
+            <span>{text.physicalSize(finishedWidthCm, finishedHeightCm)}</span>
           </div>
           <span className="status-pill">{text.tools[tool].title}</span>
         </section>
@@ -2999,7 +3060,12 @@ export default function App() {
                 <span>{text.estimatedPacks}</span>
                 <strong>{totalPacks}</strong>
               </div>
+              <div>
+                <span>{text.stockSuggest}</span>
+                <strong>{totalStock}</strong>
+              </div>
             </div>
+            <small className="usage-stock-note">{text.stockSuggestHint}</small>
             <label className="usage-pack-setting">
               <span>{text.beadsPerPack}</span>
               <div className="usage-pack-control">
@@ -3102,6 +3168,7 @@ export default function App() {
                   <span className="usage-count">
                     <strong>{row.count}</strong>
                     <small>{row.packs} {text.packUnit}</small>
+                    <small className="usage-stock-hint">{text.stockSuggest} {suggestStock(row.count)}</small>
                   </span>
                 </button>
               ))}
@@ -3296,6 +3363,76 @@ export default function App() {
                   />
                   {text.layerOverlap}
                 </label>
+              </div>
+              <div className="board-spec-field">
+                <div className="board-spec-head">
+                  <strong>{text.boardSpec}</strong>
+                  <small>{text.boardSpecHint}</small>
+                </div>
+                <div className="board-spec-presets">
+                  {[
+                    { label: '29 * 29', size: 29 },
+                    { label: '52 * 52', size: 52 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      className={
+                        project.boardSettings.boardWidth === preset.size && project.boardSettings.boardHeight === preset.size
+                          ? 'active'
+                          : ''
+                      }
+                      onClick={() => applyBoardSize(preset.size, preset.size)}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  <label className="board-spec-diameter">
+                    <span>{text.beadDiameter}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={15}
+                      step={0.5}
+                      value={project.boardSettings.beadSizeMm}
+                      onChange={(event) => setBeadSizeMm(Number(event.target.value))}
+                    />
+                    <small>{text.beadDiameterUnit}</small>
+                  </label>
+                </div>
+                <div className="board-spec-custom">
+                  <span>{text.boardSpecCustom}</span>
+                  <input
+                    aria-label="Board width"
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={boardSizeDraft.width}
+                    onChange={(event) => setBoardSizeDraft((current) => ({ ...current, width: Number(event.target.value) }))}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') applyBoardSize(boardSizeDraft.width, boardSizeDraft.height);
+                    }}
+                  />
+                  <span>×</span>
+                  <input
+                    aria-label="Board height"
+                    type="number"
+                    min={1}
+                    max={200}
+                    value={boardSizeDraft.height}
+                    onChange={(event) => setBoardSizeDraft((current) => ({ ...current, height: Number(event.target.value) }))}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') applyBoardSize(boardSizeDraft.width, boardSizeDraft.height);
+                    }}
+                  />
+                  <button type="button" onClick={() => applyBoardSize(boardSizeDraft.width, boardSizeDraft.height)}>
+                    {text.apply}
+                  </button>
+                </div>
+                <div className="board-spec-meta">
+                  <span>{language === 'zh' ? `需要 ${boardCount} 块板` : `${boardCount} boards`}</span>
+                  <span>{text.physicalSize(finishedWidthCm, finishedHeightCm)}</span>
+                </div>
               </div>
             </div>
             </section>

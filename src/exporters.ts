@@ -1,4 +1,5 @@
 import { getColor, mappedCode } from './palette';
+import { suggestStock } from './usage';
 import type { BeadLayer, BeadProject, BrandId, UsageRow } from './types';
 
 export type PrintExportOptions = {
@@ -459,7 +460,7 @@ function usageSheetRows(
     ['\u989c\u8272\u6570', usage.length],
     ['\u6bcf\u5305\u6570\u91cf', `${project.settings.beadsPerPack} \u9897/\u5305`],
     [],
-    ['\u8272\u53f7\u54c1\u724c', '\u8272\u53f7', '\u989c\u8272\u540d\u79f0', 'HEX', '\u6570\u91cf', '\u9884\u8ba1\u5305\u6570'],
+    ['\u8272\u53f7\u54c1\u724c', '\u8272\u53f7', '\u989c\u8272\u540d\u79f0', 'HEX', '\u6570\u91cf', '\u9884\u8ba1\u5305\u6570', '\u5907\u8d27\u5efa\u8bae\uff08+10%\uff09'],
     ...usage.map((row) => [
       project.activeBrand,
       mappedCode(row.color, project.activeBrand),
@@ -467,6 +468,7 @@ function usageSheetRows(
       row.color.hex,
       row.count,
       row.packs,
+      suggestStock(row.count),
     ]),
   ];
 }
