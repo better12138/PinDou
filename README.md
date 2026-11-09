@@ -1,24 +1,24 @@
 # Perler Beads Generator
 
-Live demo: https://jett-wu.github.io/Perler_Beads_Generator/
+当前版本 v1.0.0 · 在线演示：https://jett-wu.github.io/Perler_Beads_Generator/（上游项目）· 本仓库可通过下方 GitHub Pages 工作流自行部署
 
-一个强大的拼豆图纸编辑器，可以把图片转换成可打印的拼豆图纸，也可以像绘图软件一样手动编辑、分层创作、统计用量并导出高清图纸。
+一个跑在浏览器里的拼豆图纸工具：上传照片就能自动量化成真实拼豆色号，生成之后还能像绘图软件一样继续修图、分层、看 3D 成品效果，最后导出带色号与坐标的高清图纸和用量清单。图片转换、编辑、导出全部在本地完成，不上传服务器。
 
 ![Perler Beads Generator workspace](docs/realistic-workspace.png)
 
 ## 功能亮点
 
-- **图片生成图纸**：按拼豆格区域采样图片，支持卡通 / 写实风格、色数上限、容差和背景处理。
-- **MARD / Artkal 色卡匹配**：内置 MARD 基础版 221 色、完整版 291 色，以及 Artkal S 系列 176 色（5mm 中豆），支持品牌切换、色号分组、最近使用和快速选色。
-- **专业编辑工具**：画笔、橡皮、填充、消除、换色、吸管、移动、复制、粘贴、镜像、形状和文字工具。
-- **文字 / 数字 / 符号插入**：支持横排、竖排、字号和间距调整，适合制作姓名、编号和装饰文字。
-- **多图层工作流**：支持新建、隐藏、锁定、重命名、复制、拖拽排序、只看当前图层和按图层统计用量。
-- **参考图临摹**：可上传参考图，调整透明度、位置和缩放，用于手动临摹或核对图案。
-- **当前图层调整**：支持亮度、对比度、饱和度、色温、色相、反色、灰阶、黑白、颜色整理和色数上限。
-- **实时 3D 预览**：模拟拼豆完成后的效果，支持放大查看，并跟随圆形 / 方形豆显示模式。
-- **用量统计**：按颜色统计颗数，可设置每包数量，并估算每种颜色所需包数。
-- **高清导出**：支持导出 PNG / PDF 图纸、Excel 用量清单和 JSON 编辑记录。
-- **浏览器本地处理**：图片转换和编辑在浏览器中完成，不需要上传图片到服务器。
+- **图片生成图纸**：按每个拼豆格覆盖的原图区域采样取色，支持卡通 / 写实两种风格、色数上限、容差和背景去除；卡通模式会保留眼睛、轮廓等深色小特征，竖构图按画板比例收缩，避免生成后再缩放导致糊边。
+- **拼豆板与成品尺寸**：内置 29×29 / 52×52 / 78×78 / 104×104 等常用尺寸并直接标注要几块板，也可自定义板规格与豆子直径（2.6mm 迷你豆 / 5mm 中豆）并按格子数换算出成品厘米尺寸；改画板尺寸时，只要有原图就用与导入完全相同的算法按新尺寸重算，而不是把已经量化好的格子拉伸。
+- **三套真实色卡**：MARD 基础版 221 色、MARD 完整版 291 色、Artkal S 系列 176 色（5mm 中豆），支持品牌切换、色号分组、最近使用和快速选色。
+- **专业编辑工具**：画笔、橡皮、填充、消除（同色 / 连续块）、换色、吸管、移动、复制、粘贴、镜像、形状和文字工具；文字支持横排 / 竖排、字号和间距。
+- **多图层工作流**：新建、隐藏、锁定、重命名、复制、拖拽排序、只看当前图层，以及按图层统计用量。
+- **人像辅助**：智能抠图去背景、人脸自动取景（头顶留白 / 取景范围 / 水平位置可调），以及可调透明度、位置和缩放的参考图临摹。
+- **当前图层调整**：亮度、对比度、饱和度、色温、色相、反色、灰阶、黑白、相近色整理和色数上限，随时可撤销。
+- **实时 3D 预览**：带中孔豆、清漆高光和柔和阴影的成品效果，跟随圆形 / 方形豆显示，可放大查看。
+- **用量统计**：按颜色统计颗数，可设置每包数量并估算包数，附带 +10% 备货建议抵消掉豆与熨烫损耗；支持只统计当前图层或全部图层，导出 Excel / CSV 直接照着买豆。
+- **高清导出**：PNG / PDF 图纸（PDF 可按拼豆板自动分页，每页标注板号并附该页色号与颗数）、Excel 用量清单，以及可再次导入继续编辑的 JSON 编辑记录。
+- **本地与离线**：转换、编辑、导出全部在浏览器完成；原图存入 IndexedDB、草稿自动保存，刷新不丢；构建产物自带依赖、不依赖 CDN，可离线运行；导出额度由纯前端兑换码控制。
 
 ## 效果展示
 
@@ -146,10 +146,13 @@ src/
   product.ts              # 价格与购买渠道文案
   WorkspaceCanvas.tsx     # 2D 画布、绘制工具、参考图、复制、移动和文字逻辑
   ThreePreview.tsx        # 3D 拼豆预览
-  imageToBeads.ts         # 图片转拼豆图纸算法
+  imageToBeads.ts         # 图片转拼豆图纸算法（采样、配色、抖动、深色特征保护）
   palette.ts              # MARD / Artkal 色卡、色号分组和颜色匹配
   project.ts              # 项目数据、图层、自动保存和兼容导入
-  exporters.ts            # PNG / PDF 图纸、Excel 用量和 JSON 编辑记录导出
+  sourceImage.ts          # 用 IndexedDB 保存原图，支持改画板尺寸后按原图重算
+  cutout.ts               # 人像智能抠图（MediaPipe，本地运行）
+  autoframe.ts            # 人脸检测与自动取景
+  exporters.ts            # PNG / PDF 图纸（含按板分页）、Excel 用量和 JSON 编辑记录导出
   usage.ts                # 用量统计和无相邻拼豆检测
   types.ts                # 共享类型定义
   styles.css              # 全局样式
@@ -191,25 +194,25 @@ tsconfig.build.json       # 构建输出配置
 
 # Perler Beads Generator
 
-Live demo: https://jett-wu.github.io/Perler_Beads_Generator/
+Version 1.0.0 · Live demo: https://jett-wu.github.io/Perler_Beads_Generator/ (upstream project) · this repo can deploy itself with the GitHub Pages workflow below
 
-A powerful Perler bead pattern editor for turning images into printable bead charts, with manual editing, layers, reference tracing, usage counting, 3D preview, and high-resolution exports.
+A browser-based Perler bead pattern tool: upload a photo and it is quantized to real bead color codes, then keep editing it like a drawing app, layer by layer, preview the finished piece in 3D, and export high-resolution charts plus a usage list. Conversion, editing, and export all run locally in the browser; images are never uploaded.
 
 ![Perler Beads Generator workspace](docs/realistic-workspace.png)
 
 ## Highlights
 
-- **Image-to-pattern conversion** with bead-cell area sampling, cartoon / realistic styles, color limits, tolerance, and background handling.
-- **MARD / Artkal color matching** with built-in MARD Basic 221-color and Complete 291-color palettes plus the Artkal S-series 176-color (5mm midi) palette, with brand switching, color groups, recent colors, and fast selection.
-- **Editing tools** including pencil, eraser, fill, clear, recolor, eyedropper, move, copy, paste, mirror, shapes, and text.
-- **Text insertion** for letters, numbers, symbols, and Chinese characters, with horizontal / vertical layout, size, and spacing controls.
-- **Layer workflow** with add, hide, lock, rename, duplicate, drag reorder, current-layer-only view, and per-layer usage counting.
-- **Reference image tracing** with opacity, position, drag, and scale controls for manual tracing or visual checking.
-- **Active-layer adjustments** for brightness, contrast, saturation, temperature, hue, invert, grayscale, black-white, color cleanup, and color limits.
-- **Live 3D preview** with an enlarged viewer and round / square bead display modes.
-- **Usage statistics** by color, custom beads-per-pack settings, and estimated packs.
-- **High-resolution exports** for PNG / PDF patterns, Excel usage workbooks, and JSON edit records.
-- **Local browser-side processing**. Images are processed in the browser and are not uploaded to a server.
+- **Image-to-pattern conversion** that samples the source area covered by each bead cell, with cartoon / realistic styles, color limits, tolerance, and background removal. Cartoon mode keeps small dark features such as eyes and outlines, and tall images are shrunk to the board ratio up front so they never have to be resampled afterwards.
+- **Pegboard and finished size** with presets such as 29×29 / 52×52 / 78×78 / 104×104, each labeled with how many boards it needs, plus custom board specs and bead diameter (2.6mm mini / 5mm midi) that convert the grid into a finished size in centimeters. When the board size changes, any available source image is re-run through the exact same conversion pipeline instead of stretching already-quantized cells.
+- **Three real palettes**: MARD Basic 221, MARD Complete 291, and Artkal S-series 176 (5mm midi), with brand switching, color groups, recent colors, and fast selection.
+- **Editing tools**: pencil, eraser, fill, clear (same color / connected block), recolor, eyedropper, move, copy, paste, mirror, shapes, and text, including horizontal / vertical text with size and spacing controls.
+- **Layer workflow**: add, hide, lock, rename, duplicate, drag to reorder, current-layer-only view, and per-layer usage counting.
+- **Portrait helpers**: automatic background removal, face-based auto framing with headroom / zoom / offset controls, plus a reference image layer with opacity, position, and scale for tracing.
+- **Active-layer adjustments**: brightness, contrast, saturation, temperature, hue, invert, grayscale, black-white, similar-color cleanup, and color limits, all undoable.
+- **Live 3D preview** with midi beads, varnish highlights, and soft shadows, following the round / square bead display mode, with an enlarged viewer.
+- **Usage statistics** by color with custom beads-per-pack and estimated packs, plus a +10% stock suggestion to cover dropped beads and ironing loss, scoped to the current layer or all layers, exportable to Excel / CSV for shopping.
+- **High-resolution exports**: PNG / PDF charts (PDF can paginate automatically per pegboard, each page labeled with its board position and that page's color codes and bead counts), Excel usage workbooks, and JSON edit records that can be imported back for further editing.
+- **Local and offline**: conversion, editing, and export all happen in the browser; source images are kept in IndexedDB and drafts autosave across refreshes; the build ships its own dependencies with no CDN, so it runs offline; export credits are handled by a client-side redemption code.
 
 ## Gallery
 
@@ -337,10 +340,13 @@ src/
   product.ts              # Price and sales channel copy
   WorkspaceCanvas.tsx     # 2D editor canvas, tools, reference image, copy/move/text logic
   ThreePreview.tsx        # 3D bead preview
-  imageToBeads.ts         # Image-to-bead conversion algorithm
+  imageToBeads.ts         # Image-to-bead conversion (sampling, palettes, dithering, dark-feature protection)
   palette.ts              # MARD / Artkal palettes, groups, and color matching
   project.ts              # Project data, layers, autosave, and import compatibility
-  exporters.ts            # PNG / PDF pattern, Excel usage, and JSON export
+  sourceImage.ts          # Keeps the source image in IndexedDB so a resize can re-run the conversion
+  cutout.ts               # Portrait background removal (MediaPipe, fully local)
+  autoframe.ts            # Face detection and automatic portrait framing
+  exporters.ts            # PNG / PDF charts (with optional per-board pagination), Excel usage, and JSON export
   usage.ts                # Usage summary and isolated bead detection
   types.ts                # Shared TypeScript types
   styles.css              # Global styles
