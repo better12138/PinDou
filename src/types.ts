@@ -1,4 +1,4 @@
-export type BrandId = 'MARD';
+export type BrandId = 'MARD' | 'ARTKAL';
 
 export type ToolId = 'pencil' | 'eraser' | 'fill' | 'remove' | 'recolor' | 'eyedropper' | 'move' | 'copy' | 'paste' | 'mirror' | 'shape' | 'text' | 'pan';
 
@@ -21,7 +21,7 @@ export type TextDirection = 'horizontal' | 'vertical';
 
 export type PaletteColor = {
   id: string;
-  primaryBrand: 'MARD';
+  primaryBrand: BrandId;
   primaryCode: string;
   hex: string;
   rgb: [number, number, number];

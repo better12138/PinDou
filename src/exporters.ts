@@ -1,5 +1,5 @@
 import { getColor, mappedCode } from './palette';
-import type { BeadLayer, BeadProject, UsageRow } from './types';
+import type { BeadLayer, BeadProject, BrandId, UsageRow } from './types';
 
 export type PrintExportOptions = {
   format?: 'png' | 'pdf';
@@ -152,7 +152,7 @@ function renderPrintCanvas(project: BeadProject, options: PrintExportOptions): H
         context.font = `700 ${Math.max(8, Math.floor(cellSize * 0.38))}px Arial, sans-serif`;
         context.textAlign = 'center';
         context.textBaseline = 'middle';
-        context.fillText(color.primaryCode, left + cellSize / 2, top + cellSize / 2 + 0.4);
+        context.fillText(mappedCode(color, printProject.activeBrand), left + cellSize / 2, top + cellSize / 2 + 0.4);
       }
       context.strokeStyle = 'rgba(107, 114, 128, 0.46)';
       context.lineWidth = 0.55;
@@ -164,7 +164,7 @@ function renderPrintCanvas(project: BeadProject, options: PrintExportOptions): H
     drawPrintGuideLines(context, printProject, gridLeft, gridTop, cellSize);
   }
   drawOuterGridFrame(context, gridLeft, gridTop, gridWidth, gridHeight);
-  drawUsageLegend(context, usage, margin + labelBand, gridTop + gridHeight + labelBand + 24, contentWidth, chipWidth, chipHeight, chipGap);
+  drawUsageLegend(context, usage, margin + labelBand, gridTop + gridHeight + labelBand + 24, contentWidth, chipWidth, chipHeight, chipGap, printProject.activeBrand);
 
   return canvas;
 }
@@ -277,6 +277,7 @@ function drawUsageLegend(
   chipWidth: number,
   chipHeight: number,
   chipGap: number,
+  brand: BrandId,
 ): void {
   context.save();
   const chipsPerRow = Math.max(1, Math.floor(width / (chipWidth + chipGap)));
@@ -299,7 +300,7 @@ function drawUsageLegend(
     context.fillStyle = luminance(row.color.rgb) < 130 ? '#ffffff' : '#111827';
     context.font = '700 12px Arial, sans-serif';
     context.textAlign = 'center';
-    context.fillText(row.color.primaryCode, chipLeft + 21, chipTop + chipHeight / 2 + 0.5);
+    context.fillText(mappedCode(row.color, brand), chipLeft + 21, chipTop + chipHeight / 2 + 0.5);
     context.fillStyle = '#111827';
     context.font = '700 14px Arial, sans-serif';
     context.textAlign = 'right';
@@ -319,7 +320,7 @@ function summarizeProjectUsage(project: BeadProject): Array<{ color: NonNullable
       const color = getColor(colorId);
       return color ? [{ color, count }] : [];
     })
-    .sort((a, b) => b.count - a.count || a.color.primaryCode.localeCompare(b.color.primaryCode));
+    .sort((a, b) => b.count - a.count || mappedCode(a.color, project.activeBrand).localeCompare(mappedCode(b.color, project.activeBrand)));
 }
 
 function printLayerProjects(project: BeadProject, options: PrintExportOptions): Array<{ project: BeadProject; layerName?: string }> {
@@ -404,7 +405,7 @@ function summarizeLayerUsage(
       const color = getColor(colorId);
       return color ? [{ color, count, packs: Math.ceil(count / project.settings.beadsPerPack) }] : [];
     })
-    .sort((a, b) => b.count - a.count || a.color.primaryCode.localeCompare(b.color.primaryCode));
+    .sort((a, b) => b.count - a.count || mappedCode(a.color, project.activeBrand).localeCompare(mappedCode(b.color, project.activeBrand)));
 }
 
 function usageLayerSheetName(layer: BeadLayer, index: number): string {

@@ -9,7 +9,7 @@ Live demo: https://jett-wu.github.io/Perler_Beads_Generator/
 ## 功能亮点
 
 - **图片生成图纸**：按拼豆格区域采样图片，支持卡通 / 写实风格、色数上限、容差和背景处理。
-- **MARD 色卡匹配**：内置 MARD 基础版 221 色与完整版 291 色，支持色号分组、最近使用和快速选色。
+- **MARD / Artkal 色卡匹配**：内置 MARD 基础版 221 色、完整版 291 色，以及 Artkal S 系列 176 色（5mm 中豆），支持品牌切换、色号分组、最近使用和快速选色。
 - **专业编辑工具**：画笔、橡皮、填充、消除、换色、吸管、移动、复制、粘贴、镜像、形状和文字工具。
 - **文字 / 数字 / 符号插入**：支持横排、竖排、字号和间距调整，适合制作姓名、编号和装饰文字。
 - **多图层工作流**：支持新建、隐藏、锁定、重命名、复制、拖拽排序、只看当前图层和按图层统计用量。
@@ -104,7 +104,7 @@ src/
   WorkspaceCanvas.tsx     # 2D 画布、绘制工具、参考图、复制、移动和文字逻辑
   ThreePreview.tsx        # 3D 拼豆预览
   imageToBeads.ts         # 图片转拼豆图纸算法
-  palette.ts              # MARD 色卡、色号分组和颜色匹配
+  palette.ts              # MARD / Artkal 色卡、色号分组和颜色匹配
   project.ts              # 项目数据、图层、自动保存和兼容导入
   exporters.ts            # PNG / PDF 图纸、Excel 用量和 JSON 编辑记录导出
   usage.ts                # 用量统计和无相邻拼豆检测
@@ -131,6 +131,7 @@ tsconfig.build.json       # 构建输出配置
 ## 说明
 
 - MARD 色卡用于颜色匹配和界面显示，实际拼豆颜色可能受批次、光线和屏幕显示影响。
+- Artkal S 系列色号与色值来自 [Bitbead 公开色卡](https://www.bitbead.app/zh/colors/artkal)（CC BY 4.0）；切换品牌时，跨品牌色号按加权 RGB 最近色匹配，仅供参考。
 - 图片生成图纸时，应用会按每个拼豆格对应的原图区域采样，而不是只读取单个像素。
 - JSON 编辑记录用于恢复可编辑项目，不是通用图片格式。
 - 应用以桌面端使用为主，并针对不同屏幕比例、分辨率和浏览器缩放做了响应式布局处理。
@@ -156,7 +157,7 @@ A powerful Perler bead pattern editor for turning images into printable bead cha
 ## Highlights
 
 - **Image-to-pattern conversion** with bead-cell area sampling, cartoon / realistic styles, color limits, tolerance, and background handling.
-- **MARD color matching** with built-in Basic 221-color and Complete 291-color palettes, color groups, recent colors, and fast selection.
+- **MARD / Artkal color matching** with built-in MARD Basic 221-color and Complete 291-color palettes plus the Artkal S-series 176-color (5mm midi) palette, with brand switching, color groups, recent colors, and fast selection.
 - **Editing tools** including pencil, eraser, fill, clear, recolor, eyedropper, move, copy, paste, mirror, shapes, and text.
 - **Text insertion** for letters, numbers, symbols, and Chinese characters, with horizontal / vertical layout, size, and spacing controls.
 - **Layer workflow** with add, hide, lock, rename, duplicate, drag reorder, current-layer-only view, and per-layer usage counting.
@@ -251,7 +252,7 @@ src/
   WorkspaceCanvas.tsx     # 2D editor canvas, tools, reference image, copy/move/text logic
   ThreePreview.tsx        # 3D bead preview
   imageToBeads.ts         # Image-to-bead conversion algorithm
-  palette.ts              # MARD palettes, groups, and color matching
+  palette.ts              # MARD / Artkal palettes, groups, and color matching
   project.ts              # Project data, layers, autosave, and import compatibility
   exporters.ts            # PNG / PDF pattern, Excel usage, and JSON export
   usage.ts                # Usage summary and isolated bead detection
@@ -278,6 +279,7 @@ tsconfig.build.json       # Build output config
 ## Notes
 
 - MARD palette colors are used for matching and display. Real bead colors may vary by batch, lighting, and screen calibration.
+- Artkal S-series codes and hex values come from the [public Bitbead color chart](https://www.bitbead.app/en/colors/artkal) (CC BY 4.0). Cross-brand codes are matched to the nearest color in the other palette and are reference-only.
 - Image conversion samples the image area covered by each bead cell instead of reading only a single pixel.
 - JSON edit records are for restoring editable projects, not for general image exchange.
 - The app is desktop-first and includes responsive layout handling for different screen ratios, resolutions, and browser zoom levels.

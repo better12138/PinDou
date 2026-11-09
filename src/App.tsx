@@ -6,7 +6,7 @@ import { imageFileToBeads } from './imageToBeads';
 import { cutoutPortrait } from './cutout';
 import { buildFrameRect, cropImageFile, detectPortraitFrame, drawFramePreview } from './autoframe';
 import type { FrameRect } from './autoframe';
-import { basicPalette, colorDistance, completePalette, getColor, nearestPaletteColor } from './palette';
+import { artkalPalette, basicPalette, colorDistance, completePalette, getColor, mappedCode, nearestPaletteColor } from './palette';
 import { composeVisibleCells, createLayer, createProject, loadDraft, normalizeProject, saveDraft, withCells, withLayers } from './project';
 import { findIsolatedBeads, summarizeUsage } from './usage';
 import type { ArrowKind, BackgroundMode, BeadProject, ClipboardPattern, CopyMode, GenerationStyle, MirrorDirection, MoveMode, RemoveMode, RightClickAction, ShapeFillMode, ShapeKind, TextDirection, ToolId } from './types';
@@ -126,6 +126,7 @@ const ui: Record<Language, any> = {
         effectApplied: (name: string, count: number) => `已应用${name}，影响 ${count} 颗拼豆。`,
         mardBasic: 'MARD 基础版（221色）',
         mardComplete: 'MARD 完整版（291色）',
+        artkalPalette: 'Artkal 标准版（176色）',
         recentColors: '最近使用',
         layers: '图层',
         addLayer: '新建图层',
@@ -353,6 +354,7 @@ const ui: Record<Language, any> = {
         effectApplied: (name: string, count: number) => `${name} applied to ${count} beads.`,
         mardBasic: 'MARD Basic (221 colors)',
         mardComplete: 'MARD Complete (291 colors)',
+        artkalPalette: 'Artkal Standard (176 colors)',
         recentColors: 'Recent',
         layers: 'Layers',
         addLayer: 'New layer',
@@ -640,7 +642,7 @@ export default function App() {
     [isolatedBeadRefs, showIsolatedBeads],
   );
   const selectedColor = getColor(selectedColorId);
-  const activePalette = paletteMode === 'basic' ? basicPalette : completePalette;
+  const activePalette = project.activeBrand === 'ARTKAL' ? artkalPalette : paletteMode === 'basic' ? basicPalette : completePalette;
   const recentColors = recentColorIds.flatMap((id) => {
     const color = activePalette.find((item) => item.id === id);
     return color ? [color] : [];
@@ -658,7 +660,7 @@ export default function App() {
   );
 
   function displayCode(color: NonNullable<typeof selectedColor>): string {
-    return color.primaryCode;
+    return mappedCode(color, project.activeBrand);
   }
 
   function displayName(color: NonNullable<typeof selectedColor>): string {
@@ -814,7 +816,7 @@ export default function App() {
       void generateFromImage({ recordHistory: shouldCommit, automatic: true });
     }, 420);
     return () => window.clearTimeout(timer);
-  }, [pendingFile, convertWidth, maxColors, generationStyle, backgroundMode, tolerance, paletteMode]);
+  }, [pendingFile, convertWidth, maxColors, generationStyle, backgroundMode, tolerance, paletteMode, project.activeBrand]);
 
   useEffect(() => {
     if (!frameSession || !framePreviewRef.current) return;
@@ -834,6 +836,16 @@ export default function App() {
     setSelectedColorId(colorId);
     if (options.updateRecent === false) return;
     setRecentColorIds((current) => [colorId, ...current.filter((id) => id !== colorId)].slice(0, 7));
+  }
+
+  // 品牌和色板版本合并成一个选项：Artkal 只有一套 176 色，MARD 分基础/完整。
+  function changeBrandOption(value: string) {
+    if (value === 'artkal') {
+      if (project.activeBrand !== 'ARTKAL') updateProject({ ...project, activeBrand: 'ARTKAL' });
+      return;
+    }
+    setPaletteMode(value === 'complete' ? 'complete' : 'basic');
+    if (project.activeBrand !== 'MARD') updateProject({ ...project, activeBrand: 'MARD' });
   }
 
   function activateTool(nextTool: ToolId) {
@@ -2495,9 +2507,13 @@ export default function App() {
             </div>
             <div className="readonly-brand-field">
               {text.brandCodes}
-              <select value={paletteMode} onChange={(event) => setPaletteMode(event.target.value as PaletteMode)}>
+              <select
+                value={project.activeBrand === 'ARTKAL' ? 'artkal' : paletteMode}
+                onChange={(event) => changeBrandOption(event.target.value)}
+              >
                 <option value="basic">{text.mardBasic}</option>
                 <option value="complete">{text.mardComplete}</option>
+                <option value="artkal">{text.artkalPalette}</option>
               </select>
             </div>
             <div className="palette-filter" aria-label="Palette groups">
@@ -3034,7 +3050,7 @@ export default function App() {
               <h2>{text.cell}</h2>
               {hoverCell ? (
                 <span>
-                  R{hoverCell.y + 1} C{hoverCell.x + 1} - {getColor(hoverCell.colorId)?.primaryCode ?? text.empty}
+                  R{hoverCell.y + 1} C{hoverCell.x + 1} - {(hoverCell.colorId ? displayCodeById(hoverCell.colorId) : '') || text.empty}
                 </span>
               ) : (
                 <span>{text.hoverBoard}</span>

@@ -297,48 +297,259 @@ ZG7,#E2A9D2
 ZG8,#AB91C0
 `;
 
+// Artkal S 系列 176 色（5mm 中豆）。色值来源 bitbead 公开色卡
+// https://www.bitbead.app/zh/colors/artkal （CC BY 4.0），仅取色号/名称/色值。
+const rawArtkalCsv = `
+S01,#FFFFFF,White
+S02,#FFA38B,Burning Sand
+S03,#FF8200,Tangerine
+S04,#FA4616,Orange
+S05,#EE2737,Tall Poppy
+S06,#EF64A2,Raspberry Pink
+S07,#97999B,Gray
+S08,#26D07C,Emerald
+S09,#007371,Dark Green
+S10,#56B7E6,Baby Blue
+S11,#0050B5,Dark Blue
+S12,#9063CD,Pastel Lavender
+S13,#000000,Black
+S14,#FDDA24,Sandstorm
+S15,#A72B2A,Redwood
+S16,#674736,Brown
+S17,#7B4D35,Light Brown
+S18,#EAA794,Sand
+S19,#F8C1B8,Bubble Gum
+S20,#249E6B,Green
+S21,#93C90E,Pastel Green
+S22,#483698,Purple
+S23,#7D55C7,Royal Purple
+S24,#1164C9,True Blue
+S25,#EF60A3,Hot Pink
+S26,#F04E98,Magenta
+S27,#FFC72C,Yellow
+S28,#EF95CF,Lily Pink
+S29,#FBDB65,Pastel Yellow
+S30,#A4E6E8,Shadow Green
+S31,#B5E3D8,Sea Mist
+S32,#FECB8B,Beeswax
+S33,#C5B4E3,Maverick
+S34,#D50032,Red
+S35,#F7CED7,Mona Lisa
+S36,#E06287,Old Pink
+S37,#8BD3E6,Blue-Green
+S38,#BC204B,Burgundy
+S39,#FF7F41,Yellow Orange
+S40,#F99FC9,Carnation Pink
+S41,#9A5516,Copper
+S42,#A09F9D,Silver
+S43,#75787B,Dark Gray
+S44,#9BCBEB,Sky Blue
+S45,#00B2A9,Medium Turquoise
+S46,#8EDD65,Bright Green
+S47,#A6631B,Marigold
+S48,#FFC845,Corn
+S49,#973961,Mulberry Wood
+S50,#FFB3AB,Mandys Pink
+S51,#FFF8DB,Spring Sun
+S52,#F8E08E,Picasso
+S53,#62A0E6,Blue Enchantress
+S54,#0090DA,Light Blue
+S55,#ADDC91,Pistachio
+S56,#FF6A39,Bright Carrot
+S57,#B33D26,Buccaneer
+S58,#BA0C2F,Paprika
+S59,#5949A7,Butterfly Bush
+S60,#9678D3,Lavender
+S61,#E6DE77,Key Lemon Pie
+S62,#007C58,Green Tea
+S63,#4C5914,Metallic Gold
+S64,#2C2D65,Black Rock
+S65,#F0EC74,Canary
+S66,#EE5340,Blaze Orange
+S67,#ECC3B2,Vanilla
+S68,#E7B78A,Tan
+S69,#212721,Mine Shaft
+S70,#BABC16,Dark Algae
+S71,#008522,Jade Green
+S72,#67D9DF,Light Sea Blue
+S73,#48A9C5,Steel Blue
+S74,#04A9C7,Azure
+S75,#0085AD,Dark Steel Blue
+S76,#00A7B5,Sea Blue
+S77,#D9D9D6,Ghost White
+S78,#C8C9C7,Ash Gray
+S79,#B1B3B3,Light Gray
+S80,#A2A569,Dark Olive
+S81,#D5A286,Deer
+S82,#C58B68,Clay
+S83,#B15533,Sienna
+S84,#AB5C57,Deep Chestnut
+S85,#8A2A2B,Red Wine
+S86,#F29D04,Goldenrod
+S87,#FF808B,Coral Red
+S88,#DA1884,Dark Pink
+S89,#53565A,Charcoal Gray
+S90,#FFC56E,Pastel Orange
+S91,#183028,Brunswick Green
+S92,#C69214,Dandelion
+S93,#EDC8A3,Pale Skin
+S94,#EAA794,Warm Blush
+S95,#E8927C,Salmon
+S96,#FF8D6D,Apricot
+S97,#E35205,Papaya
+S98,#80B6E8,Himalaya Blue
+S99,#5CA9CC,Waterfall
+S100,#5DB3CB,Lagoon
+S101,#00A3E1,Electric Blue
+S102,#0077CF,Pool Blue
+S103,#0067B9,Caribbean Blue
+S104,#007DBA,Deep Water
+S105,#00859B,Petrol Blue
+S106,#0076A8,Wedgewood Blue
+S107,#007096,Pond Blue
+S108,#E6C78A,Seashell Beige
+S109,#CEB888,Beige
+S110,#C6AA76,Beach Beige
+S111,#A08629,Caffe Latte
+S112,#897630,Oaktree Brown
+S113,#C3C6A8,Khaki
+S114,#C0BB87,Light Greengray
+S115,#B0AA7E,Mossy Green
+S116,#A3AA83,Earth Green
+S117,#77744D,Sage Green
+S118,#5E6738,Pinetree Green
+S119,#98DBCE,Frosty Blue
+S120,#9BE3BF,Polar Mint
+S121,#6BBBAE,Celadon Green
+S122,#00BB7E,Eucalyptus
+S123,#31B700,Clover Field
+S124,#035F1D,Pooltable Felt
+S125,#007864,Snake Green
+S126,#00685E,Dark Eucalyptus
+S127,#DECDE7,Marshmallow Rose
+S128,#C98BDB,Light Grape
+S129,#DCB6C9,Rosebud Pink
+S130,#DD74A1,Fuchsia
+S131,#AD96DC,Candy Violet
+S132,#EF426F,Flamingo
+S133,#C724B1,Pink Plum
+S134,#8031A7,Amethyst
+S135,#9FAEE5,Moonlight Blue
+S136,#B4B2E4,Summer Rain
+S137,#5F8DDA,Azur Blue
+S138,#5780D2,Cornflower Blue
+S139,#5576D1,Forget Me Not
+S140,#3C62C3,Indigo
+S141,#466CCA,Horizon Blue
+S142,#365ABD,Cobalt
+S143,#1E22AA,Royal Blue
+S144,#002D72,Marine
+S145,#E9E186,Pale Yellow Moss
+S146,#8C243D,Bloodrose Red
+S147,#86C8BC,Spearmint
+S148,#724736,Mocha
+S149,#FCD299,Creme
+S150,#8B84D7,Iris Violet
+S151,#335525,Forrest Green
+S152,#A7A4E0,Lilac
+S153,#C6C4EA,Pale Lilac
+S154,#EBC29D,Sahara Sand
+S155,#C58B68,Sunkissed Teint
+S156,#63666A,Steel Grey
+S157,#46494C,Iron Grey
+S158,#191D19,Pepper
+S159,#88888D,Oslo Gray
+SE01,#D1DDE6,Extended Pale Blue
+SE02,#9BB8E3,Extended Light Blue
+SE03,#5E8AB4,Extended Medium Blue
+SE04,#6AD1E3,Extended Cyan
+SE05,#03C1AA,Extended Teal
+SE06,#126AD4,Extended Bright Blue
+SE07,#BFA5B8,Extended Dusty Mauve
+SE08,#9B7793,Extended Muted Purple
+SE09,#693C5E,Extended Dark Plum
+SE10,#C964CF,Extended Bright Magenta
+SE11,#AD1AAC,Extended Deep Magenta
+SE12,#FFB25B,Extended Light Orange
+SE13,#E6A65D,Extended Caramel
+SE14,#D38235,Extended Dark Caramel
+SE15,#C16C18,Extended Burnt Caramel
+SE16,#F5B6CD,Extended Light Pink
+SE17,#5D2A2C,Extended Maroon
+`;
+
 
 export const brandLabels: Record<BrandId, string> = {
   MARD: 'MARD',
+  ARTKAL: 'Artkal',
 };
 
-export const paletteVersion = 'mard-291-v1';
+export const paletteVersion = 'mard-291-artkal-176-v1';
 
-function parseRawColors(csv: string): Array<{ code: string; hex: string }> {
+type RawColor = { code: string; hex: string; name?: string };
+
+function parseRawColors(csv: string): RawColor[] {
   return csv
   .trim()
   .split('\n')
   .map((line) => {
-    const [code, hex] = line.split(',');
-    return { code: code.trim(), hex: hex.trim() };
+    const [code, hex, ...name] = line.split(',');
+    return { code: code.trim(), hex: hex.trim(), name: name.join(',').trim() };
   });
 }
 
 const rawColors = parseRawColors(rawColorsCsv);
 const rawCompleteColors = [...rawColors, ...parseRawColors(rawExtendedColorsCsv)];
+const rawArtkalColors = parseRawColors(rawArtkalCsv);
 
-function makePalette(colors: Array<{ code: string; hex: string }>): PaletteColor[] {
-  return colors.map(({ code, hex }) => {
+function makePalette(colors: RawColor[], brand: BrandId): PaletteColor[] {
+  return colors.map(({ code, hex, name }) => {
   const rgb = hexToRgb(hex);
-  const family = code.startsWith('ZG') ? 'ZG' : code[0];
+  const family = code.startsWith('SE') || code.startsWith('ZG') ? code.slice(0, 2) : code[0];
+  const codes: Partial<Record<BrandId, string>> = {};
+  codes[brand] = code;
   return {
-    id: `mard-${code.toLowerCase()}`,
-    primaryBrand: 'MARD',
+    id: `${brand.toLowerCase()}-${code.toLowerCase()}`,
+    primaryBrand: brand,
     primaryCode: code,
     hex,
     rgb,
     group: family,
-    name: `MARD ${code}`,
-    codes: {
-      MARD: code,
-    },
+    name: brand === 'ARTKAL' ? `Artkal ${name || code}` : `MARD ${code}`,
+    codes,
   };
 });
 }
 
-export const basicPalette: PaletteColor[] = makePalette(rawColors);
-export const completePalette: PaletteColor[] = makePalette(rawCompleteColors);
+export const basicPalette: PaletteColor[] = makePalette(rawColors, 'MARD');
+export const completePalette: PaletteColor[] = makePalette(rawCompleteColors, 'MARD');
+export const artkalPalette: PaletteColor[] = makePalette(rawArtkalColors, 'ARTKAL');
 export const palette: PaletteColor[] = basicPalette;
+
+/** 为跨品牌色号补全“最接近的可购买色号”，切换品牌后仍能显示对应编号。 */
+function linkNearestCodes(colors: PaletteColor[], source: PaletteColor[], brand: BrandId): void {
+  for (const color of colors) {
+    if (color.codes[brand]) continue;
+    let best = source[0];
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of source) {
+      const distance = colorDistance(color.rgb, candidate.rgb);
+      if (distance < bestDistance) {
+        best = candidate;
+        bestDistance = distance;
+      }
+    }
+    color.codes[brand] = best.primaryCode;
+  }
+}
+
+linkNearestCodes(basicPalette, artkalPalette, 'ARTKAL');
+linkNearestCodes(completePalette, artkalPalette, 'ARTKAL');
+linkNearestCodes(artkalPalette, completePalette, 'MARD');
+
+const colorIndex = new Map<string, PaletteColor>();
+for (const color of completePalette) colorIndex.set(color.id, color);
+for (const color of artkalPalette) colorIndex.set(color.id, color);
 
 export function hexToRgb(hex: string): [number, number, number] {
   const normalized = hex.replace('#', '');
@@ -348,7 +559,7 @@ export function hexToRgb(hex: string): [number, number, number] {
 
 export function getColor(id: string | null): PaletteColor | undefined {
   if (!id) return undefined;
-  return completePalette.find((color) => color.id === id);
+  return colorIndex.get(id);
 }
 
 export function nearestPaletteColor(

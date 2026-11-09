@@ -129,7 +129,7 @@ export function normalizeProject(project: BeadProject): BeadProject {
     ...project,
     width,
     height,
-    activeBrand: 'MARD',
+    activeBrand: project.activeBrand === 'ARTKAL' ? 'ARTKAL' : 'MARD',
     settings,
     boardSettings: { ...fallback.boardSettings, ...project.boardSettings },
     layers,
