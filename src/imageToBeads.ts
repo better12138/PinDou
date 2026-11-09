@@ -314,6 +314,8 @@ function candidateDiversityScore(
 
 function chooseCellColor(cell: SampledCell, candidates: PaletteColor[], profile: StyleProfile): string | null {
   if (cell.backgroundShare >= profile.backgroundThreshold || cell.samples.length === 0) return null;
+  const featureRgb = minorityDarkFeatureRgb(cell.samples);
+  if (featureRgb) return nearestPaletteColor(featureRgb, candidates).id;
   const counts = new Map<string, { color: PaletteColor; count: number }>();
   cell.samples.forEach((rgb) => {
     const color = nearestPaletteColor(rgb, candidates);
@@ -423,7 +425,51 @@ function ditherCellColors(
 function cellTargetColor(cell: SampledCell, profile: StyleProfile): [number, number, number] | null {
   if (cell.backgroundShare >= profile.backgroundThreshold || !cell.average) return null;
   // 双色交界：用主导色块的颜色，避免平均后产生中间色把边缘糊掉。
-  return dominantClusterColor(cell.samples) ?? cell.average;
+  return minorityDarkFeatureRgb(cell.samples) ?? dominantClusterColor(cell.samples) ?? cell.average;
+}
+
+/**
+ * 小面积深色特征保护。
+ *
+ * 眼睛、嘴角、细描边在一个格子里往往只占 10% 左右，取主导色或平均色都会被背景色吞掉。
+ * 这里把样本按色桶聚合，若存在一个「占比不高、但明显比主色暗」的色桶，就直接用它，
+ * 让黑色线条和小五官在受限色板下也能留下来。
+ */
+function minorityDarkFeatureRgb(samples: Array<[number, number, number]>): [number, number, number] | null {
+  if (samples.length < 8) return null;
+  const buckets = new Map<string, { sum: [number, number, number]; count: number }>();
+  samples.forEach((sample) => {
+    const key = sample.map((channel) => Math.round(channel / 24)).join(',');
+    const bucket = buckets.get(key) ?? { sum: [0, 0, 0], count: 0 };
+    bucket.sum[0] += sample[0];
+    bucket.sum[1] += sample[1];
+    bucket.sum[2] += sample[2];
+    bucket.count += 1;
+    buckets.set(key, bucket);
+  });
+
+  const rows = [...buckets.values()]
+    .map((bucket) => ({
+      rgb: bucket.sum.map((channel) => Math.round(channel / bucket.count)) as [number, number, number],
+      count: bucket.count,
+    }))
+    .sort((a, b) => b.count - a.count);
+  const primary = rows[0];
+  if (!primary) return null;
+  const primaryLuminance = luminance(primary.rgb);
+
+  let best: { rgb: [number, number, number]; count: number } | null = null;
+  for (const row of rows.slice(1)) {
+    const share = row.count / samples.length;
+    if (share < 0.08) continue;
+    const featureLuminance = luminance(row.rgb);
+    // 只保深色线条和五官，不让背景色/亮色块反过来侵入主体。
+    if (featureLuminance > 96) continue;
+    if (featureLuminance + 50 > primaryLuminance) continue;
+    if (colorDistance(row.rgb, primary.rgb) < 70) continue;
+    if (!best || row.count > best.count) best = row;
+  }
+  return best ? best.rgb : null;
 }
 
 /** 把格子内的采样分成两组；只有明显双色且其中一组占多数时，才返回主导色块的平均色。 */
