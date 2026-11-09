@@ -155,6 +155,10 @@ const ui: Record<Language, any> = {
         creditsLeft: (count: number) => `剩余 ${count} 次`,
         creditsTitle: '兑换码与导出次数',
         noCredits: '导出需要 1 次额度，请先兑换。',
+        exportConfirmTitle: '确认导出',
+        exportConfirmDescription: (name: string) => `${name}将消耗 1 次导出额度，确认后继续。`,
+        exportConfirmRemaining: (count: number) => `本次导出后剩余 ${count} 次`,
+        exportConfirmAction: '确认并导出',
         view: '视图',
         beadShape: '豆子形状',
         roundBeads: '圆形',
@@ -386,6 +390,10 @@ const ui: Record<Language, any> = {
         creditsLeft: (count: number) => `${count} left`,
         creditsTitle: 'Credits and redemption',
         noCredits: 'Exports need 1 credit. Redeem a code first.',
+        exportConfirmTitle: 'Confirm export',
+        exportConfirmDescription: (name: string) => `${name} uses 1 export credit. Continue only if you are ready.`,
+        exportConfirmRemaining: (count: number) => `${count} credits left after this export`,
+        exportConfirmAction: 'Confirm and export',
         view: 'View',
         beadShape: 'Bead shape',
         roundBeads: 'Round',
@@ -575,6 +583,7 @@ export default function App() {
   const [showPrintExportPanel, setShowPrintExportPanel] = useState(false);
   const [creditCount, setCreditCount] = useState(getCredits);
   const [showUnlock, setShowUnlock] = useState(false);
+  const [pendingExport, setPendingExport] = useState<'pattern' | 'usage' | null>(null);
   const [printExportOptions, setPrintExportOptions] = useState<PrintExportOptions>({
     format: 'png',
     exportBounds: 'pattern',
@@ -844,15 +853,15 @@ export default function App() {
 
   useEffect(() => subscribeCredits(() => setCreditCount(getCredits())), []);
 
-  // 每次高清导出消耗 1 次额度；没有额度时打开兑换弹窗。
-  function ensureExportCredit(): boolean {
-    if (consumeCredit()) {
-      setCreditCount(getCredits());
-      return true;
+  // 导出前先让用户确认，避免误点直接扣次；没有额度时打开兑换弹窗。
+  function requestExport(kind: 'pattern' | 'usage') {
+    setShowPrintExportPanel(false);
+    if (getCredits() < 1) {
+      setNotice(text.noCredits);
+      setShowUnlock(true);
+      return;
     }
-    setNotice(text.noCredits);
-    setShowUnlock(true);
-    return false;
+    setPendingExport(kind);
   }
 
   function selectColor(colorId: string, options: { updateRecent?: boolean } = {}) {
@@ -1081,7 +1090,7 @@ export default function App() {
     commitHistory();
     const nextLayers = layers.map((layer) => ({
       ...layer,
-      cells: resizeCells(layer.cells, project.width, project.height, width, height),
+      cells: rescaleCellsToFit(layer.cells, project.width, project.height, width, height),
     }));
     updateProject({
       ...project,
@@ -1090,7 +1099,11 @@ export default function App() {
       layers: nextLayers,
       cells: composeVisibleCells(nextLayers, width, height),
     });
-    setNotice(language === 'zh' ? `画布已调整为 ${width} * ${height}。` : `Canvas resized to ${width} x ${height}.`);
+    setNotice(
+      language === 'zh'
+        ? `画布已调整为 ${width} * ${height}，图案已等比缩放并居中。`
+        : `Canvas resized to ${width} x ${height}; the pattern was scaled to fit and centered.`,
+    );
   }
 
   function applyPreset(value: string) {
@@ -1281,9 +1294,7 @@ export default function App() {
   }
 
   function exportUsageList() {
-    if (!ensureExportCredit()) return;
-    downloadUsageWorkbook(project);
-    setNotice(text.usageExported);
+    requestExport('usage');
   }
 
   function exportEditRecord() {
@@ -1507,8 +1518,25 @@ export default function App() {
   }, [language]);
 
   function exportPrintPattern() {
-    if (!ensureExportCredit()) {
-      setShowPrintExportPanel(false);
+    requestExport('pattern');
+  }
+
+  function confirmExport() {
+    const kind = pendingExport;
+    if (!kind) return;
+    // 确认时再次检查并扣次，处理另一个标签页已先用掉额度的情况。
+    if (!consumeCredit()) {
+      setPendingExport(null);
+      setNotice(text.noCredits);
+      setShowUnlock(true);
+      return;
+    }
+    setCreditCount(getCredits());
+    setPendingExport(null);
+
+    if (kind === 'usage') {
+      downloadUsageWorkbook(project);
+      setNotice(text.usageExported);
       return;
     }
     const exportOptions = {
@@ -1521,7 +1549,6 @@ export default function App() {
     } else {
       downloadPrintPng(project, exportOptions);
     }
-    setShowPrintExportPanel(false);
   }
 
   return (
@@ -3095,6 +3122,36 @@ export default function App() {
           {floatingHelp.text}
         </div>
       )}
+      {pendingExport && (
+        <div className="unlock-backdrop" role="presentation" onClick={() => setPendingExport(null)}>
+          <section
+            className="unlock-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={text.exportConfirmTitle}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="unlock-header">
+              <div>
+                <h2>{text.exportConfirmTitle}</h2>
+                <p>{text.exportConfirmDescription(pendingExport === 'pattern' ? text.exportPatternFull : text.exportUsageFull)}</p>
+              </div>
+              <button className="unlock-close" type="button" aria-label={text.close} onClick={() => setPendingExport(null)}>
+                ×
+              </button>
+            </header>
+            <div className="unlock-credits">
+              {text.creditsLeft(creditCount)} · {text.exportConfirmRemaining(Math.max(0, creditCount - 1))}
+            </div>
+            <div className="export-confirm-actions">
+              <button type="button" onClick={() => setPendingExport(null)}>{text.frameCancel}</button>
+              <button className="primary unlock-submit" type="button" autoFocus onClick={confirmExport}>
+                {text.exportConfirmAction}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {showUnlock && <UnlockDialog onClose={() => setShowUnlock(false)} />}
     </main>
   );
@@ -3438,6 +3495,34 @@ function resizeCells(
   for (let y = 0; y < copyHeight; y += 1) {
     for (let x = 0; x < copyWidth; x += 1) {
       next[y * newWidth + x] = cells[y * oldWidth + x] ?? null;
+    }
+  }
+  return next;
+}
+
+/**
+ * 调整画布尺寸时把图案等比缩放到新画布能容纳的最大尺寸并居中，
+ * 而不是按左上角裁剪/留空——否则用户改大或改小宽度都会丢掉一部分图案。
+ */
+function rescaleCellsToFit(
+  cells: Array<string | null>,
+  oldWidth: number,
+  oldHeight: number,
+  newWidth: number,
+  newHeight: number,
+): Array<string | null> {
+  const next = Array.from({ length: newWidth * newHeight }, () => null as string | null);
+  if (oldWidth <= 0 || oldHeight <= 0) return next;
+  const scale = Math.min(newWidth / oldWidth, newHeight / oldHeight);
+  const targetWidth = Math.max(1, Math.min(newWidth, Math.round(oldWidth * scale)));
+  const targetHeight = Math.max(1, Math.min(newHeight, Math.round(oldHeight * scale)));
+  const offsetX = Math.floor((newWidth - targetWidth) / 2);
+  const offsetY = Math.floor((newHeight - targetHeight) / 2);
+  for (let y = 0; y < targetHeight; y += 1) {
+    const sourceY = Math.min(oldHeight - 1, Math.floor(((y + 0.5) / targetHeight) * oldHeight));
+    for (let x = 0; x < targetWidth; x += 1) {
+      const sourceX = Math.min(oldWidth - 1, Math.floor(((x + 0.5) / targetWidth) * oldWidth));
+      next[(y + offsetY) * newWidth + x + offsetX] = cells[sourceY * oldWidth + sourceX] ?? null;
     }
   }
   return next;

@@ -4547,6 +4547,20 @@ button:focus-visible {
   min-height: 42px;
 }
 
+.export-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr;
+  gap: 10px;
+}
+
+.export-confirm-actions button {
+  min-height: 42px;
+}
+
+.export-confirm-actions .unlock-submit {
+  margin-top: 0;
+}
+
 .unlock-buy {
   margin-top: 20px;
   padding-top: 16px;

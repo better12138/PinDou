@@ -20,6 +20,7 @@ type PreviewRefs = {
   beads: THREE.Group;
   keyLight: THREE.DirectionalLight;
   frame: number;
+  dirty: boolean;
   dragging: boolean;
   lastX: number;
   lastY: number;
@@ -115,6 +116,7 @@ export default function ThreePreview({ project, title, emptyLabel, closeLabel, e
       beads,
       keyLight,
       frame: 0,
+      dirty: true,
       dragging: false,
       lastX: 0,
       lastY: 0,
@@ -135,7 +137,11 @@ export default function ThreePreview({ project, title, emptyLabel, closeLabel, e
     resize();
 
     function animate() {
-      renderer.render(scene, camera);
+      // 大图案下每帧渲染非常昂贵，只有相机或豆子变化时才真正绘制。
+      if (preview.dirty) {
+        renderer.render(scene, camera);
+        preview.dirty = false;
+      }
       preview.frame = window.requestAnimationFrame(animate);
     }
     animate();
@@ -197,92 +203,101 @@ export default function ThreePreview({ project, title, emptyLabel, closeLabel, e
   }, [expanded]);
 
   useEffect(() => {
-    const preview = refs.current;
-    if (!preview) return;
+    const rebuild = () => {
+      const preview = refs.current;
+      if (!preview) return;
 
-    disposeGroup(preview.beads);
-    preview.beads.clear();
+      disposeGroup(preview.beads);
+      preview.beads.clear();
 
-    const spacing = BEAD_SPACING;
-    const byColor = new Map<string, Array<[number, number, number]>>();
-    const visibleLayers = (project.layers ?? []).filter((layer) => layer.visible);
-    visibleLayers.forEach((layer, layerIndex) => {
-      (layer.cells ?? []).forEach((colorId, index) => {
-        if (!colorId) return;
-        const x = index % project.width;
-        const y = Math.floor(index / project.width);
-        const items = byColor.get(colorId) ?? [];
-        items.push([x, y, layerIndex]);
-        byColor.set(colorId, items);
+      const spacing = BEAD_SPACING;
+      const byColor = new Map<string, Array<[number, number, number]>>();
+      const visibleLayers = (project.layers ?? []).filter((layer) => layer.visible);
+      visibleLayers.forEach((layer, layerIndex) => {
+        (layer.cells ?? []).forEach((colorId, index) => {
+          if (!colorId) return;
+          const x = index % project.width;
+          const y = Math.floor(index / project.width);
+          const items = byColor.get(colorId) ?? [];
+          items.push([x, y, layerIndex]);
+          byColor.set(colorId, items);
+        });
       });
-    });
 
-    const beadGeometry = createBeadGeometry(project.settings.beadDisplayMode === 'pixel' ? 'square' : 'round');
-    const matrix = new THREE.Matrix4();
-    const instanceColor = new THREE.Color();
-    byColor.forEach((items, colorId) => {
-      const color = getColor(colorId);
-      if (!color) return;
-      // 塑料质感的拼豆：低粗糙度 + 清漆层，配合灯光形成柔和的高光；颜色由实例色控制。
-      const material = new THREE.MeshPhysicalMaterial({
-        color: 0xffffff,
-        roughness: 0.42,
-        metalness: 0,
-        clearcoat: 0.55,
-        clearcoatRoughness: 0.35,
-        ior: 1.5,
+      // 大图案降低几何精度并关闭投影，否则数万颗倒角豆子会拖垮渲染。
+      const simplified = beadCount > 9000;
+      const beadGeometry = createBeadGeometry(project.settings.beadDisplayMode === 'pixel' ? 'square' : 'round', simplified);
+      const matrix = new THREE.Matrix4();
+      const instanceColor = new THREE.Color();
+      byColor.forEach((items, colorId) => {
+        const color = getColor(colorId);
+        if (!color) return;
+        // 塑料质感的拼豆：低粗糙度 + 清漆层，配合灯光形成柔和的高光；颜色由实例色控制。
+        const material = simplified
+          ? new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45, metalness: 0 })
+          : new THREE.MeshPhysicalMaterial({
+              color: 0xffffff,
+              roughness: 0.42,
+              metalness: 0,
+              clearcoat: 0.55,
+              clearcoatRoughness: 0.35,
+              ior: 1.5,
+            });
+        const mesh = new THREE.InstancedMesh(beadGeometry, material, items.length);
+        // 实例散布整个画布，关闭视锥裁剪避免被误裁。
+        mesh.frustumCulled = false;
+        mesh.castShadow = !simplified;
+        mesh.receiveShadow = true;
+
+        const baseColor = new THREE.Color(color.hex);
+        items.forEach(([x, y, layerIndex], itemIndex) => {
+          matrix.makeTranslation(
+            (x - (project.width - 1) / 2) * spacing,
+            layerIndex * LAYER_LIFT,
+            (y - (project.height - 1) / 2) * spacing,
+          );
+          mesh.setMatrixAt(itemIndex, matrix);
+          // 每颗豆子做极轻微的明暗差异，避免整片颜色像贴图一样死板。
+          const shade = 0.95 + hashNoise(x, y, layerIndex) * 0.1;
+          instanceColor.copy(baseColor).multiplyScalar(shade);
+          mesh.setColorAt(itemIndex, instanceColor);
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        preview.beads.add(mesh);
       });
-      const mesh = new THREE.InstancedMesh(beadGeometry, material, items.length);
-      // 实例散布整个画布，关闭视锥裁剪避免被误裁。
-      mesh.frustumCulled = false;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+      if (byColor.size === 0) beadGeometry.dispose();
 
-      const baseColor = new THREE.Color(color.hex);
-      items.forEach(([x, y, layerIndex], itemIndex) => {
-        matrix.makeTranslation(
-          (x - (project.width - 1) / 2) * spacing,
-          layerIndex * LAYER_LIFT,
-          (y - (project.height - 1) / 2) * spacing,
-        );
-        mesh.setMatrixAt(itemIndex, matrix);
-        // 每颗豆子做极轻微的明暗差异，避免整片颜色像贴图一样死板。
-        const shade = 0.95 + hashNoise(x, y, layerIndex) * 0.1;
-        instanceColor.copy(baseColor).multiplyScalar(shade);
-        mesh.setColorAt(itemIndex, instanceColor);
-      });
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      preview.beads.add(mesh);
-    });
-    if (byColor.size === 0) beadGeometry.dispose();
+      const span = Math.max(project.width, project.height, 8) * spacing;
 
-    const span = Math.max(project.width, project.height, 8) * spacing;
+      // 底板：圆角、微光泽的拼豆板，接住豆子的投影。
+      const plate = createPegboard(project.width * spacing, project.height * spacing);
+      plate.position.y = -BEAD_HEIGHT / 2 - 0.02;
+      preview.beads.add(plate);
 
-    // 底板：圆角、微光泽的拼豆板，接住豆子的投影。
-    const plate = createPegboard(project.width * spacing, project.height * spacing);
-    plate.position.y = -BEAD_HEIGHT / 2 - 0.02;
-    preview.beads.add(plate);
+      // 根据画布尺寸更新阴影相机范围，保证投影不丢。
+      const reach = Math.max(span * 0.75, 6);
+      const shadowCamera = preview.keyLight.shadow.camera;
+      shadowCamera.left = -reach;
+      shadowCamera.right = reach;
+      shadowCamera.top = reach;
+      shadowCamera.bottom = -reach;
+      shadowCamera.near = 0.5;
+      shadowCamera.far = reach * 4 + 30;
+      shadowCamera.updateProjectionMatrix();
 
-    // 根据画布尺寸更新阴影相机范围，保证投影不丢。
-    const reach = Math.max(span * 0.75, 6);
-    const shadowCamera = preview.keyLight.shadow.camera;
-    shadowCamera.left = -reach;
-    shadowCamera.right = reach;
-    shadowCamera.top = reach;
-    shadowCamera.bottom = -reach;
-    shadowCamera.near = 0.5;
-    shadowCamera.far = reach * 4 + 30;
-    shadowCamera.updateProjectionMatrix();
+      const layerSpan = Math.max(0, visibleLayers.length - 1) * LAYER_LIFT;
+      preview.keyLight.target.position.set(0, layerSpan / 2, 0);
 
-    const layerSpan = Math.max(0, visibleLayers.length - 1) * LAYER_LIFT;
-    preview.keyLight.target.position.set(0, layerSpan / 2, 0);
-
-    controlsRef.current.minDistance = Math.max(3.5, span * 0.35);
-    controlsRef.current.maxDistance = Math.max(12, span * 3.8);
-    controlsRef.current.distance = clamp(span * 1.25, controlsRef.current.minDistance, controlsRef.current.maxDistance);
-    controlsRef.current.targetY = layerSpan / 2;
-    updateCamera(preview, controlsRef.current);
+      controlsRef.current.minDistance = Math.max(3.5, span * 0.35);
+      controlsRef.current.maxDistance = Math.max(12, span * 3.8);
+      controlsRef.current.distance = clamp(span * 1.25, controlsRef.current.minDistance, controlsRef.current.maxDistance);
+      controlsRef.current.targetY = layerSpan / 2;
+      updateCamera(preview, controlsRef.current);
+    };
+    // 画笔每次落笔都会更新 project，大图案重建很昂贵，做防抖合并。
+    const timer = window.setTimeout(rebuild, 120);
+    return () => window.clearTimeout(timer);
   }, [project, expanded]);
 
   return (
@@ -342,6 +357,7 @@ function updateCamera(preview: PreviewRefs, controls: { yaw: number; pitch: numb
     Math.cos(controls.yaw) * horizontal,
   );
   preview.camera.lookAt(0, controls.targetY, 0);
+  preview.dirty = true;
 }
 
 function wrapAngle(value: number): number {
@@ -361,7 +377,7 @@ function hashNoise(x: number, y: number, layerIndex: number): number {
 }
 
 /** 带中孔的立体豆子：外形挤出 + 倒角，熨烫后边缘圆润的观感。 */
-function createBeadGeometry(shapeMode: 'round' | 'square') {
+function createBeadGeometry(shapeMode: 'round' | 'square', simplified = false) {
   const outer = new THREE.Shape();
   if (shapeMode === 'square') {
     const half = BEAD_RADIUS * 0.94;
@@ -387,10 +403,10 @@ function createBeadGeometry(shapeMode: 'round' | 'square') {
   const geometry = new THREE.ExtrudeGeometry(outer, {
     depth: Math.max(0.01, BEAD_HEIGHT - bevelThickness * 2),
     bevelEnabled: true,
-    bevelSegments: 3,
+    bevelSegments: simplified ? 1 : 3,
     bevelSize: 0.035,
     bevelThickness,
-    curveSegments: shapeMode === 'square' ? 6 : 24,
+    curveSegments: shapeMode === 'square' ? (simplified ? 3 : 6) : simplified ? 10 : 24,
   });
   geometry.center();
   geometry.rotateX(Math.PI / 2);

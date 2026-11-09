@@ -562,10 +562,22 @@ export function getColor(id: string | null): PaletteColor | undefined {
   return colorIndex.get(id);
 }
 
+// 量化时要对几十万次采样找最近色。按 5bit/通道做缓存键，把重复的色板扫描变成查表；
+// 缓存挂在色板数组上（WeakMap 不阻止 GC），候选色板不变时结果一致，误差在拼豆色阶内可忽略。
+const nearestCaches = new WeakMap<PaletteColor[], Map<number, PaletteColor>>();
+
 export function nearestPaletteColor(
   rgb: [number, number, number],
   candidates: PaletteColor[] = palette,
 ): PaletteColor {
+  let cache = nearestCaches.get(candidates);
+  if (!cache) {
+    cache = new Map();
+    nearestCaches.set(candidates, cache);
+  }
+  const key = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
+  const cached = cache.get(key);
+  if (cached) return cached;
   let best = candidates[0];
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const color of candidates) {
@@ -575,6 +587,7 @@ export function nearestPaletteColor(
       bestDistance = distance;
     }
   }
+  cache.set(key, best);
   return best;
 }
 
