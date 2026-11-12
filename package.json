@@ -1,6 +1,6 @@
 {
   "name": "perler-beads-generator",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Browser-based Perler bead pattern editor: turn photos into bead charts with real MARD / Artkal color codes, edit layer by layer, preview in 3D, and export printable charts and usage lists — all processed locally.",
   "private": true,
   "type": "module",

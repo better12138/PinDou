@@ -43,3 +43,8 @@ release-smoke*.png
 *_release_smoke.png
 *.local
 *.local.*
+
+# Local tooling and packaged builds (not source)
+.trae/
+.trae-html-share-packages/
+release/
