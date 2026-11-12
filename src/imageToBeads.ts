@@ -1,5 +1,5 @@
-import { colorDistance, nearestPaletteColor, palette } from './palette';
-import type { ConvertOptions, ConvertResult, GenerationStyle, PaletteColor } from './types';
+import { colorDistanceLab, mergeThresholdByLevel, nearestPaletteColor, palette, rgbThresholdToDeltaE, rgbToLab, type Lab } from './palette';
+import type { ColorSubstitution, ConvertOptions, ConvertResult, GenerationStyle, PaletteColor } from './types';
 
 type StyleProfile = {
   sampleSide: number;
@@ -42,9 +42,53 @@ const styleProfiles: Record<GenerationStyle, StyleProfile> = {
   },
 };
 
+// ΔE00 比 RGB 距离贵得多，而合并/去噪会对同一批色号反复比较：按色号对缓存感知距离。
+const colorPairDistanceCache = new Map<string, number>();
+
+function paletteColorDistance(a: PaletteColor, b: PaletteColor): number {
+  if (a.id === b.id) return 0;
+  const key = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+  const cached = colorPairDistanceCache.get(key);
+  if (cached !== undefined) return cached;
+  const distance = colorDistanceLab(a.rgb, b.rgb);
+  colorPairDistanceCache.set(key, distance);
+  return distance;
+}
+
+// 误差扩散/双色聚类会在相邻格之间反复比较同一批整数 RGB 对：再缓存一层 ΔE00 结果。
+const rgbPairDeltaECache = new Map<number, number>();
+
+function perceptualDistance(a: [number, number, number], b: [number, number, number]): number {
+  const keyA = (a[0] << 16) | (a[1] << 8) | a[2];
+  const keyB = (b[0] << 16) | (b[1] << 8) | b[2];
+  if (keyA === keyB) return 0;
+  const key = keyA < keyB ? keyA * 16777216 + keyB : keyB * 16777216 + keyA;
+  const cached = rgbPairDeltaECache.get(key);
+  if (cached !== undefined) return cached;
+  const distance = colorDistanceLab(a, b);
+  if (rgbPairDeltaECache.size >= 400000) rgbPairDeltaECache.clear();
+  rgbPairDeltaECache.set(key, distance);
+  return distance;
+}
+
+/**
+ * 选色时“算不算同一个色族”的阈值（CIEDE2000，下标 = 0~4 档强度）。
+ * 由旧版 RGB 阈值（高彩度/暗色 18+3*档、其它 34+7*档）按实测映射换算而来，
+ * 换算系数见 palette.ts 的 `rgbThresholdToDeltaE`：中间色区 ΔE00 ≈ RGB × 0.19~0.20。
+ */
+const distinctVividThreshold: readonly number[] = [3.8, 4.4, 4.9, 5.4, 6.0];
+const distinctThreshold: readonly number[] = [6.7, 7.8, 9.0, 10.2, 11.5];
+
+// 误差扩散里的“边缘 / 跨色块”判定，由旧 RGB 40 / 72 换算（ΔE00 ≈ 7.6 / 13.4）。
+const ditherEdgeThreshold = rgbThresholdToDeltaE(40);
+const ditherSpreadThreshold = rgbThresholdToDeltaE(72);
+// 小面积深色特征与主色的最小差异（旧 RGB 70 → ΔE00 ≈ 12.9）。
+const darkFeatureContrastThreshold = rgbThresholdToDeltaE(70);
+// 双色聚类的分离度下限（旧 RGB 60 → ΔE00 ≈ 10.9）。
+const clusterSeparationThreshold = rgbThresholdToDeltaE(60);
+
 export async function imageFileToBeads(file: File, options: ConvertOptions): Promise<ConvertResult> {
   const image = await loadImage(file);
-  const { width, height } = resolveGridSize(image, options);
   const sourceWidth = Math.max(1, image.naturalWidth);
   const sourceHeight = Math.max(1, image.naturalHeight);
   const canvas = document.createElement('canvas');
@@ -55,6 +99,20 @@ export async function imageFileToBeads(file: File, options: ConvertOptions): Pro
   context.imageSmoothingEnabled = true;
   context.drawImage(image, 0, 0, sourceWidth, sourceHeight);
   const data = context.getImageData(0, 0, sourceWidth, sourceHeight).data;
+  return convertImageData(data, sourceWidth, sourceHeight, options);
+}
+
+/**
+ * 纯像素入口：不依赖 DOM，便于回归脚本直接喂样例图数据。
+ * `imageFileToBeads` 只负责解码图片，算法全部在这里。
+ */
+export function convertImageData(
+  data: Uint8ClampedArray,
+  sourceWidth: number,
+  sourceHeight: number,
+  options: ConvertOptions,
+): ConvertResult {
+  const { width, height } = resolveGridSize(sourceWidth, sourceHeight, options);
   const activePalette = options.palette ?? palette;
   const profile = styleProfiles[options.generationStyle ?? 'cartoon'];
   const requestedSpeckleStrength = options.speckleReduction ?? 0;
@@ -62,7 +120,8 @@ export async function imageFileToBeads(file: File, options: ConvertOptions): Pro
   const backgroundColor = estimateBackgroundColor(data, sourceWidth, sourceHeight);
   const sampledCells = sampleGridCells(data, sourceWidth, sourceHeight, width, height, options, backgroundColor, profile, speckleStrength);
   const ranked = rankPaletteColors(sampledCells, options, activePalette, profile);
-  const candidates = selectCandidateColors(ranked, Math.max(2, options.maxColors), activePalette, speckleStrength, profile);
+  const clustered = clusterPaletteCandidates(sampledCells, Math.max(2, options.maxColors), activePalette, profile);
+  const candidates = selectCandidateColors(ranked, Math.max(2, options.maxColors), activePalette, speckleStrength, profile, clustered);
   const cells = profile.useErrorDiffusion
     ? ditherCellColors(sampledCells, width, height, candidates, profile)
     : sampledCells.map((cell) => chooseCellColor(cell, candidates, profile));
@@ -72,7 +131,57 @@ export async function imageFileToBeads(file: File, options: ConvertOptions): Pro
   const reducedCells = reduceSpeckles(compactCells, width, height, speckleStrength, candidates);
   const colorsUsed = new Set(reducedCells.filter(Boolean)).size;
   const totalBeads = reducedCells.filter(Boolean).length;
-  return { width, height, cells: reducedCells, colorsUsed, totalBeads };
+  const substitutions = options.idealPalette
+    ? summarizeSubstitutions(reducedCells, sampledCells, activePalette, options.idealPalette)
+    : [];
+  return { width, height, cells: reducedCells, colorsUsed, totalBeads, substitutions };
+}
+
+/**
+ * 库存缺色替代统计：对照色卡全量，看每个实际用到的色号“本来最该用哪颗豆”。
+ * 只有理想色不在库存里、且两颗豆肉眼可辨（ΔE00 > 2）时才算替代，避免把重复色号报成缺色。
+ */
+function summarizeSubstitutions(
+  cells: Array<string | null>,
+  sampledCells: SampledCell[],
+  activePalette: PaletteColor[],
+  idealPalette: PaletteColor[],
+): ColorSubstitution[] {
+  const usedById = new Map(activePalette.map((color) => [color.id, color]));
+  const cellCounts = new Map<string, number>();
+  // 同一个库存色可能覆盖多种原图颜色，按格数投票决定它"本来最该代表"哪个理想色。
+  const idealVotes = new Map<string, Map<string, number>>();
+  cells.forEach((id, index) => {
+    if (!id) return;
+    cellCounts.set(id, (cellCounts.get(id) ?? 0) + 1);
+    const average = sampledCells[index]?.average;
+    if (!average) return;
+    const idealId = nearestPaletteColor(average, idealPalette).id;
+    const votes = idealVotes.get(id) ?? new Map<string, number>();
+    votes.set(idealId, (votes.get(idealId) ?? 0) + 1);
+    idealVotes.set(id, votes);
+  });
+  const rows: ColorSubstitution[] = [];
+  cellCounts.forEach((count, id) => {
+    const used = usedById.get(id);
+    const votes = idealVotes.get(id);
+    if (!used || !votes) return;
+    let idealId = '';
+    let best = 0;
+    votes.forEach((vote, candidate) => {
+      if (vote > best) {
+        best = vote;
+        idealId = candidate;
+      }
+    });
+    if (!idealId || idealId === id) return;
+    const ideal = idealPalette.find((color) => color.id === idealId);
+    if (!ideal) return;
+    const deltaE = colorDistanceLab(used.rgb, ideal.rgb);
+    if (deltaE <= 2) return;
+    rows.push({ colorId: id, idealId, deltaE, cells: count });
+  });
+  return rows.sort((a, b) => b.deltaE - a.deltaE || b.cells - a.cells);
 }
 
 /**
@@ -80,11 +189,15 @@ export async function imageFileToBeads(file: File, options: ConvertOptions): Pro
  * （例如竖构图照片按画板宽度生成会高出画板），就按比例整体缩小到刚好放得下。
  * 直接在缩小的目标尺寸上采样，比先生成大图再缩放清晰得多。
  */
-function resolveGridSize(image: HTMLImageElement, options: ConvertOptions): { width: number; height: number } {
-  const naturalWidth = Math.max(1, image.naturalWidth);
-  const naturalHeight = Math.max(1, image.naturalHeight);
+function resolveGridSize(
+  naturalWidth: number,
+  naturalHeight: number,
+  options: ConvertOptions,
+): { width: number; height: number } {
+  const sourceWidth = Math.max(1, naturalWidth);
+  const sourceHeight = Math.max(1, naturalHeight);
   let width = Math.max(1, Math.round(options.width));
-  let height = Math.max(1, Math.round((naturalHeight / naturalWidth) * width));
+  let height = Math.max(1, Math.round((sourceHeight / sourceWidth) * width));
   const bounds = options.bounds;
   if (bounds) {
     const fitScale = Math.min(1, Math.max(1, bounds.width) / width, Math.max(1, bounds.height) / height);
@@ -123,48 +236,89 @@ function sampleGridCells(
   profile: StyleProfile,
   speckleStrength: number,
 ): SampledCell[] {
+  const strengthLevel = clampStrength(speckleStrength);
+  const channelStep = [1, 5, 9, 14, 20][strengthLevel];
+  const neutralThreshold = [0, 8, 14, 20, 28][strengthLevel];
+  const toleranceSquared = options.tolerance * options.tolerance;
   const cells: SampledCell[] = [];
-  const totalSamples = profile.sampleSide * profile.sampleSide;
   for (let y = 0; y < height; y += 1) {
+    const startY = Math.floor((y * sourceHeight) / height);
+    const endY = Math.min(sourceHeight, Math.max(startY + 1, Math.ceil(((y + 1) * sourceHeight) / height)));
     for (let x = 0; x < width; x += 1) {
+      const startX = Math.floor((x * sourceWidth) / width);
+      const endX = Math.min(sourceWidth, Math.max(startX + 1, Math.ceil(((x + 1) * sourceWidth) / width)));
       const samples: Array<[number, number, number]> = [];
-      let backgroundCount = 0;
-      let r = 0;
-      let g = 0;
-      let b = 0;
-
+      const cellWidth = endX - startX;
+      const cellHeight = endY - startY;
+      const sampleRepeats = new Uint8Array(cellWidth * cellHeight);
+      // 主色/暗线仍使用固定数量的分层样本；平均色与背景占比则统计格内全部像素。
       for (let sy = 0; sy < profile.sampleSide; sy += 1) {
+        const localY = Math.floor(((sy + 0.5) / profile.sampleSide) * cellHeight);
         for (let sx = 0; sx < profile.sampleSide; sx += 1) {
-          const sourceX = Math.min(
-            sourceWidth - 1,
-            Math.max(0, Math.floor(((x + (sx + 0.5) / profile.sampleSide) / width) * sourceWidth)),
-          );
-          const sourceY = Math.min(
-            sourceHeight - 1,
-            Math.max(0, Math.floor(((y + (sy + 0.5) / profile.sampleSide) / height) * sourceHeight)),
-          );
-          const index = (sourceY * sourceWidth + sourceX) * 4;
-          const alpha = data[index + 3];
-          const rgb: [number, number, number] = [data[index], data[index + 1], data[index + 2]];
-          if (isBackgroundSample(alpha, rgb, options, detectedBackgroundColor)) {
-            backgroundCount += 1;
-            continue;
-          }
-          const simplified = simplifySourceRgb(rgb, speckleStrength);
-          samples.push(simplified);
-          r += simplified[0];
-          g += simplified[1];
-          b += simplified[2];
+          const localX = Math.floor(((sx + 0.5) / profile.sampleSide) * cellWidth);
+          sampleRepeats[localY * cellWidth + localX] += 1;
         }
       }
 
+      let backgroundCount = 0;
+      let foregroundCount = 0;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let sourceY = startY; sourceY < endY; sourceY += 1) {
+        for (let sourceX = startX; sourceX < endX; sourceX += 1) {
+          const pixelIndex = sourceY * sourceWidth + sourceX;
+          const index = pixelIndex * 4;
+          if (data[index + 3] < 24) {
+            backgroundCount += 1;
+            continue;
+          }
+          if (options.backgroundMode !== 'keep') {
+            const dr = data[index] - detectedBackgroundColor[0];
+            const dg = data[index + 1] - detectedBackgroundColor[1];
+            const db = data[index + 2] - detectedBackgroundColor[2];
+            if (dr * dr + dg * dg + db * db <= toleranceSquared) {
+              backgroundCount += 1;
+              continue;
+            }
+          }
+          let rr = data[index];
+          let gg = data[index + 1];
+          let bb = data[index + 2];
+          if (strengthLevel > 0) {
+            // 与 simplifySourceRgb 等价，但按标量计算，避免为格内每个像素分配数组。
+            const chroma = Math.max(rr, gg, bb) - Math.min(rr, gg, bb);
+            if (chroma <= neutralThreshold) {
+              const value = quantizeChannel(0.299 * rr + 0.587 * gg + 0.114 * bb, channelStep);
+              rr = value;
+              gg = value;
+              bb = value;
+            } else {
+              rr = quantizeChannel(rr, channelStep);
+              gg = quantizeChannel(gg, channelStep);
+              bb = quantizeChannel(bb, channelStep);
+            }
+          }
+          foregroundCount += 1;
+          r += rr;
+          g += gg;
+          b += bb;
+          const repeat = sampleRepeats[(sourceY - startY) * cellWidth + (sourceX - startX)];
+          if (repeat > 0) {
+            const sample: [number, number, number] = [rr, gg, bb];
+            for (let count = 0; count < repeat; count += 1) samples.push(sample);
+          }
+        }
+      }
+
+      const area = Math.max(1, (endX - startX) * (endY - startY));
       cells.push({
         samples,
         average:
-          samples.length > 0
-            ? [Math.round(r / samples.length), Math.round(g / samples.length), Math.round(b / samples.length)]
+          foregroundCount > 0
+            ? [Math.round(r / foregroundCount), Math.round(g / foregroundCount), Math.round(b / foregroundCount)]
             : null,
-        backgroundShare: backgroundCount / totalSamples,
+        backgroundShare: backgroundCount / area,
       });
     }
   }
@@ -177,17 +331,35 @@ function rankPaletteColors(
   activePalette: PaletteColor[],
   profile: StyleProfile,
 ): Array<{ color: PaletteColor; count: number; score: number }> {
-  const counts = new Map<string, { color: PaletteColor; count: number }>();
-  let total = 0;
+  // 频次统计先按 5bit/通道聚合：照片每格的采样点几乎两两不同，逐点做全色卡
+  // CIEDE2000 会把生成时间放大数倍；聚合只影响“谁排前面”的频次精度，
+  // 逐格选色、抖动和合并仍走精确最近豆色。
+  const buckets = new Map<number, { r: number; g: number; b: number; count: number }>();
   sampledCells.forEach((cell) => {
     if (cell.backgroundShare >= profile.backgroundThreshold || cell.samples.length === 0) return;
     cell.samples.forEach((rgb) => {
-      total += 1;
-      const color = nearestPaletteColor(rgb, activePalette);
-      const bucket = counts.get(color.id) ?? { color, count: 0 };
+      const key = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
+      const bucket = buckets.get(key) ?? { r: 0, g: 0, b: 0, count: 0 };
+      bucket.r += rgb[0];
+      bucket.g += rgb[1];
+      bucket.b += rgb[2];
       bucket.count += 1;
-      counts.set(color.id, bucket);
+      buckets.set(key, bucket);
     });
+  });
+  const counts = new Map<string, { color: PaletteColor; count: number }>();
+  let total = 0;
+  buckets.forEach((bucket) => {
+    total += bucket.count;
+    const average: [number, number, number] = [
+      Math.round(bucket.r / bucket.count),
+      Math.round(bucket.g / bucket.count),
+      Math.round(bucket.b / bucket.count),
+    ];
+    const color = nearestPaletteColor(average, activePalette);
+    const entry = counts.get(color.id) ?? { color, count: 0 };
+    entry.count += bucket.count;
+    counts.set(color.id, entry);
   });
   const rows = [...counts.values()]
     .map((entry) => {
@@ -209,12 +381,155 @@ function rankPaletteColors(
     : activePalette.slice(0, options.maxColors).map((color) => ({ color, count: 1, score: 1 }));
 }
 
+/** 用确定性的 Lab 聚类补足全局色彩覆盖；最终映射真实豆色仍统一使用 CIEDE2000。 */
+function clusterPaletteCandidates(
+  sampledCells: SampledCell[],
+  maxColors: number,
+  activePalette: PaletteColor[],
+  profile: StyleProfile,
+): Array<{ color: PaletteColor; count: number; score: number }> {
+  const representatives = sampledCells.flatMap((cell) =>
+    cell.backgroundShare < profile.backgroundThreshold && cell.average ? [cell.average] : [],
+  );
+  if (representatives.length < 2) return [];
+  const stride = Math.max(1, Math.ceil(representatives.length / 8192));
+  const points: Array<{ rgb: [number, number, number]; lab: Lab }> = [];
+  for (let index = 0; index < representatives.length; index += stride) {
+    const rgb = representatives[index];
+    points.push({ rgb, lab: rgbToLab(rgb) });
+  }
+  const centers = kmeansLab(points.map((point) => point.lab), Math.min(maxColors, points.length));
+  const counts = new Int32Array(centers.length);
+  const sums = new Float64Array(centers.length * 3);
+  points.forEach((point) => {
+    let best = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    centers.forEach((center, index) => {
+      const distance = labDistanceSquared(point.lab, center);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = index;
+      }
+    });
+    counts[best] += 1;
+    sums[best * 3] += point.rgb[0];
+    sums[best * 3 + 1] += point.rgb[1];
+    sums[best * 3 + 2] += point.rgb[2];
+  });
+
+  const sampleScale = profile.sampleSide * profile.sampleSide;
+  const byId = new Map<string, { color: PaletteColor; count: number; score: number }>();
+  centers.forEach((_, index) => {
+    if (counts[index] === 0) return;
+    const count = counts[index];
+    const average: [number, number, number] = [
+      Math.round(sums[index * 3] / count),
+      Math.round(sums[index * 3 + 1] / count),
+      Math.round(sums[index * 3 + 2] / count),
+    ];
+    const color = nearestPaletteColor(average, activePalette);
+    const bucket = byId.get(color.id) ?? { color, count: 0, score: 0 };
+    bucket.count += count * sampleScale;
+    bucket.score = bucket.count;
+    byId.set(color.id, bucket);
+  });
+  return [...byId.values()].sort((a, b) => b.count - a.count);
+}
+
+/** 固定种子的 k-means++ 初始化 + Lloyd 迭代，避免刷新后同一图片换一套颜色。 */
+function kmeansLab(points: Lab[], requestedClusters: number): Lab[] {
+  let seed = 0x9e3779b9;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const centers: Lab[] = [points[Math.floor(random() * points.length)].slice() as Lab];
+  const minDistances = new Float64Array(points.length).fill(Number.POSITIVE_INFINITY);
+  while (centers.length < requestedClusters) {
+    const last = centers[centers.length - 1];
+    let sum = 0;
+    points.forEach((point, index) => {
+      const distance = labDistanceSquared(point, last);
+      if (distance < minDistances[index]) minDistances[index] = distance;
+      sum += minDistances[index];
+    });
+    if (sum <= 1e-9) break;
+    let target = random() * sum;
+    let pick = points.length - 1;
+    for (let index = 0; index < points.length; index += 1) {
+      target -= minDistances[index];
+      if (target <= 0) {
+        pick = index;
+        break;
+      }
+    }
+    centers.push(points[pick].slice() as Lab);
+  }
+
+  const assignments = new Int32Array(points.length).fill(-1);
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    const sums = new Float64Array(centers.length * 3);
+    const counts = new Int32Array(centers.length);
+    let moved = false;
+    points.forEach((point, pointIndex) => {
+      let best = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      centers.forEach((center, centerIndex) => {
+        const distance = labDistanceSquared(point, center);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = centerIndex;
+        }
+      });
+      if (assignments[pointIndex] !== best) {
+        assignments[pointIndex] = best;
+        moved = true;
+      }
+      counts[best] += 1;
+      sums[best * 3] += point[0];
+      sums[best * 3 + 1] += point[1];
+      sums[best * 3 + 2] += point[2];
+    });
+    centers.forEach((center, centerIndex) => {
+      if (counts[centerIndex] > 0) {
+        centers[centerIndex] = [
+          sums[centerIndex * 3] / counts[centerIndex],
+          sums[centerIndex * 3 + 1] / counts[centerIndex],
+          sums[centerIndex * 3 + 2] / counts[centerIndex],
+        ];
+        return;
+      }
+      let farthest = 0;
+      let farthestDistance = -1;
+      points.forEach((point, pointIndex) => {
+        const distance = labDistanceSquared(point, centers[assignments[pointIndex]]);
+        if (distance > farthestDistance) {
+          farthestDistance = distance;
+          farthest = pointIndex;
+        }
+      });
+      centers[centerIndex] = points[farthest].slice() as Lab;
+      moved = true;
+    });
+    if (!moved && iteration > 0) break;
+  }
+  return centers;
+}
+
+function labDistanceSquared(a: Lab, b: Lab): number {
+  const dl = a[0] - b[0];
+  const da = a[1] - b[1];
+  const db = a[2] - b[2];
+  return dl * dl + da * da + db * db;
+}
+
 function selectCandidateColors(
   ranked: Array<{ color: PaletteColor; count: number; score: number }>,
   maxColors: number,
   activePalette: PaletteColor[],
   strength: number,
   profile: StyleProfile,
+  clustered: Array<{ color: PaletteColor; count: number; score: number }>,
 ): PaletteColor[] {
   const level = Math.max(0, Math.min(4, Math.round(strength)));
   const selected: PaletteColor[] = [];
@@ -223,9 +538,9 @@ function selectCandidateColors(
     if (selectedIds.has(color.id) || selected.length >= maxColors) return false;
     if (!allowSimilar && selected.length > 0) {
       const chroma = colorChroma(color.rgb);
-      const baseThreshold = luminance(color.rgb) < 48 || chroma > 58 ? 18 : 34;
-      const threshold = (baseThreshold + level * (chroma > 58 ? 3 : 7)) * profile.candidateDistanceFactor;
-      const nearestDistance = Math.min(...selected.map((item) => colorDistance(color.rgb, item.rgb)));
+      const vivid = luminance(color.rgb) < 48 || chroma > 58;
+      const threshold = (vivid ? distinctVividThreshold : distinctThreshold)[level] * profile.candidateDistanceFactor;
+      const nearestDistance = Math.min(...selected.map((item) => paletteColorDistance(color, item)));
       if (nearestDistance < threshold) return false;
     }
     selected.push(color);
@@ -233,9 +548,11 @@ function selectCandidateColors(
     return true;
   };
 
+  const rankedIds = new Set(ranked.map((entry) => entry.color.id));
+  const diversityCandidates = [...ranked, ...clustered.filter((entry) => !rankedIds.has(entry.color.id))];
   const chooseDiverseUntil = (targetCount: number) => {
     while (selected.length < Math.min(maxColors, targetCount)) {
-      const choices = ranked
+      const choices = diversityCandidates
         .filter((entry) => !selectedIds.has(entry.color.id))
         .map((entry) => ({
           entry,
@@ -271,6 +588,7 @@ function selectCandidateColors(
     .filter((entry) => isFeaturePaletteColor(entry.color))
     .forEach((entry) => add(entry.color, shouldAllowFeatureSimilarity(entry.color, selected)));
   chooseDiverseUntil(Math.ceil(maxColors * profile.candidateTargetRatio));
+  clustered.forEach((entry) => add(entry.color));
   ranked.forEach((entry) => add(entry.color));
   if (profile.useAverageFallback || selected.length < Math.min(6, maxColors)) {
     ranked.forEach((entry) => add(entry.color, true));
@@ -300,9 +618,10 @@ function isFeaturePaletteColor(color: PaletteColor): boolean {
 
 function shouldAllowFeatureSimilarity(color: PaletteColor, selected: PaletteColor[]): boolean {
   if (selected.length === 0) return false;
-  const nearestDistance = Math.min(...selected.map((item) => colorDistance(color.rgb, item.rgb)));
+  const nearestDistance = Math.min(...selected.map((item) => paletteColorDistance(color, item)));
   const chroma = colorChroma(color.rgb);
-  return chroma > 68 && nearestDistance > 14;
+  // 高彩度特征色允许跨过同色族阈值（旧 RGB 14 → ΔE00 ≈ 2.8）。
+  return chroma > 68 && nearestDistance > rgbThresholdToDeltaE(14);
 }
 
 function featureColorScore(
@@ -311,10 +630,13 @@ function featureColorScore(
 ): number {
   const chroma = colorChroma(entry.color.rgb);
   const lightness = luminance(entry.color.rgb);
-  const selectedDistance = selected.length > 0 ? Math.min(...selected.map((color) => colorDistance(entry.color.rgb, color.rgb))) : 90;
+  // 旧 RGB 90 / 22 换算后的感知尺度：默认 17.9，1 分差异约 4.4 ΔE00。
+  const selectedDistance = selected.length > 0
+    ? Math.min(...selected.map((color) => paletteColorDistance(entry.color, color)))
+    : rgbThresholdToDeltaE(90);
   const saturationBoost = 1 + Math.min(3.2, chroma / 34);
   const contrastBoost = lightness < 42 ? 1.8 : 1;
-  const differenceBoost = Math.max(0.8, Math.min(4.5, selectedDistance / 22));
+  const differenceBoost = Math.max(0.8, Math.min(4.5, selectedDistance / rgbThresholdToDeltaE(22)));
   return Math.sqrt(Math.max(1, entry.count)) * saturationBoost * contrastBoost * differenceBoost;
 }
 
@@ -323,10 +645,11 @@ function candidateDiversityScore(
   selected: PaletteColor[],
 ): number {
   if (selected.length === 0) return entry.score;
-  const distance = Math.min(...selected.map((color) => colorDistance(entry.color.rgb, color.rgb)));
+  const distance = Math.min(...selected.map((color) => paletteColorDistance(entry.color, color)));
   const chroma = colorChroma(entry.color.rgb);
   const lightness = luminance(entry.color.rgb);
-  const distinctBoost = Math.max(0.35, Math.min(5.4, (distance / 26) ** 1.55));
+  // 旧 RGB 26 作为“1 分差异”的基准，换算成 ΔE00 ≈ 5.2。
+  const distinctBoost = Math.max(0.35, Math.min(5.4, (distance / rgbThresholdToDeltaE(26)) ** 1.55));
   const featureBoost = chroma > 58 || lightness < 48 ? 2.15 : chroma > 34 ? 1.36 : 1;
   const countSignal = Math.sqrt(Math.max(1, entry.count));
   return countSignal * distinctBoost * featureBoost;
@@ -336,15 +659,38 @@ function chooseCellColor(cell: SampledCell, candidates: PaletteColor[], profile:
   if (cell.backgroundShare >= profile.backgroundThreshold || cell.samples.length === 0) return null;
   const featureRgb = minorityDarkFeatureRgb(cell.samples);
   if (featureRgb) return nearestPaletteColor(featureRgb, candidates).id;
-  const counts = new Map<string, { color: PaletteColor; count: number }>();
-  cell.samples.forEach((rgb) => {
-    const color = nearestPaletteColor(rgb, candidates);
-    const bucket = counts.get(color.id) ?? { color, count: 0 };
+  // 先按 5bit/通道找格内主色，再对主色找一次最近豆：照片的采样点几乎两两不同，
+  // 逐点找最近色会让卡通生成慢数倍，而主色本身用色桶统计已经足够稳定。
+  const buckets = new Map<number, { r: number; g: number; b: number; count: number }>();
+  cell.samples.forEach((sample) => {
+    const key = ((sample[0] >> 3) << 10) | ((sample[1] >> 3) << 5) | (sample[2] >> 3);
+    const bucket = buckets.get(key) ?? { r: 0, g: 0, b: 0, count: 0 };
+    bucket.r += sample[0];
+    bucket.g += sample[1];
+    bucket.b += sample[2];
     bucket.count += 1;
-    counts.set(color.id, bucket);
+    buckets.set(key, bucket);
   });
-  const ranked = [...counts.values()].sort((a, b) => b.count - a.count);
-  const primary = ranked[0];
+  // 每个色桶只找一次最近豆，再按桶内样本数投票；比逐样本找最近快一个量级，
+  // 又保留了“按豆色多数表决”的稳定性，不会因为主色桶取均值而选到中间色。
+  const votes = new Map<string, { color: PaletteColor; count: number }>();
+  buckets.forEach((bucket) => {
+    // 色桶均值再落到 5bit 网格上，让同一色域复用精确缓存；误差不超过桶宽，
+    // 却能把每个格子的最近色查询从几十次降到个位数。
+    const mean: [number, number, number] = [
+      quantizeToBucket(bucket.r / bucket.count),
+      quantizeToBucket(bucket.g / bucket.count),
+      quantizeToBucket(bucket.b / bucket.count),
+    ];
+    const color = nearestPaletteColor(mean, candidates);
+    const vote = votes.get(color.id) ?? { color, count: 0 };
+    vote.count += bucket.count;
+    votes.set(color.id, vote);
+  });
+  let primary: { color: PaletteColor; count: number } | null = null;
+  for (const vote of votes.values()) {
+    if (!primary || vote.count > primary.count) primary = vote;
+  }
   if (!primary) return null;
   const primaryShare = primary.count / cell.samples.length;
   if (primaryShare >= profile.dominanceThreshold || !profile.useAverageFallback || !cell.average) {
@@ -390,7 +736,7 @@ function ditherCellColors(
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
         const neighborBase = base[ny * width + nx];
         if (!neighborBase) continue;
-        if (colorDistance(own, neighborBase) > 40) {
+        if (perceptualDistance(own, neighborBase) > ditherEdgeThreshold) {
           isSmooth = false;
           break;
         }
@@ -406,7 +752,7 @@ function ditherCellColors(
     const neighborBase = base[index];
     if (!target || !neighborBase || !smooth[index]) return;
     // 跨色块边界不扩散，避免噪点渗进相邻区域。
-    if (colorDistance(from, neighborBase) > 72) return;
+    if (perceptualDistance(from, neighborBase) > ditherSpreadThreshold) return;
     target[0] += error[0] * weight;
     target[1] += error[1] * weight;
     target[2] += error[2] * weight;
@@ -457,9 +803,10 @@ function cellTargetColor(cell: SampledCell, profile: StyleProfile): [number, num
  */
 function minorityDarkFeatureRgb(samples: Array<[number, number, number]>): [number, number, number] | null {
   if (samples.length < 8) return null;
-  const buckets = new Map<string, { sum: [number, number, number]; count: number }>();
+  const buckets = new Map<number, { sum: [number, number, number]; count: number }>();
   samples.forEach((sample) => {
-    const key = sample.map((channel) => Math.round(channel / 24)).join(',');
+    const key =
+      (Math.round(sample[0] / 24) << 8) | (Math.round(sample[1] / 24) << 4) | Math.round(sample[2] / 24);
     const bucket = buckets.get(key) ?? { sum: [0, 0, 0], count: 0 };
     bucket.sum[0] += sample[0];
     bucket.sum[1] += sample[1];
@@ -481,12 +828,13 @@ function minorityDarkFeatureRgb(samples: Array<[number, number, number]>): [numb
   let best: { rgb: [number, number, number]; count: number } | null = null;
   for (const row of rows.slice(1)) {
     const share = row.count / samples.length;
-    if (share < 0.08) continue;
+    // 8% 太容易把“浅底 + 一点点抗锯齿”的格子整格染黑，12% 仍能覆盖 1~2 像素宽的描边。
+    if (share < 0.12) continue;
     const featureLuminance = luminance(row.rgb);
     // 只保深色线条和五官，不让背景色/亮色块反过来侵入主体。
     if (featureLuminance > 96) continue;
     if (featureLuminance + 50 > primaryLuminance) continue;
-    if (colorDistance(row.rgb, primary.rgb) < 70) continue;
+    if (perceptualDistance(row.rgb, primary.rgb) < darkFeatureContrastThreshold) continue;
     if (!best || row.count > best.count) best = row;
   }
   return best ? best.rgb : null;
@@ -499,7 +847,7 @@ function dominantClusterColor(samples: Array<[number, number, number]>): [number
   let seedA = samples[0];
   let farthest = -1;
   samples.forEach((sample) => {
-    const distance = colorDistance(sample, average);
+    const distance = perceptualDistance(sample, average);
     if (distance > farthest) {
       farthest = distance;
       seedA = sample;
@@ -508,14 +856,14 @@ function dominantClusterColor(samples: Array<[number, number, number]>): [number
   let seedB = samples[0];
   let separation = -1;
   samples.forEach((sample) => {
-    const distance = colorDistance(sample, seedA);
+    const distance = perceptualDistance(sample, seedA);
     if (distance > separation) {
       separation = distance;
       seedB = sample;
     }
   });
   // 颜色差异不够大，说明是平滑渐变或同色噪点，交给平均色 + 抖动处理。
-  if (separation < 60) return null;
+  if (separation < clusterSeparationThreshold) return null;
 
   let groupA: Array<[number, number, number]> = [];
   let groupB: Array<[number, number, number]> = [];
@@ -523,7 +871,7 @@ function dominantClusterColor(samples: Array<[number, number, number]>): [number
     groupA = [];
     groupB = [];
     samples.forEach((sample) => {
-      if (colorDistance(sample, seedA) <= colorDistance(sample, seedB)) groupA.push(sample);
+      if (perceptualDistance(sample, seedA) <= perceptualDistance(sample, seedB)) groupA.push(sample);
       else groupB.push(sample);
     });
     if (groupA.length === 0 || groupB.length === 0) return null;
@@ -698,13 +1046,14 @@ function areSimilarColors(
 ): boolean {
   if (!from || !to || from.id === to.id) return false;
   const level = Math.max(0, Math.min(4, Math.round(strength)));
-  const baseThreshold = [0, 26, 42, 62, 84][level];
+  // 合并阈值统一按 CIEDE2000 标定（见 palette.ts 的 mergeThresholdByLevel）。
+  const baseThreshold = mergeThresholdByLevel[level];
   if (baseThreshold <= 0) return false;
   const fromChroma = colorChroma(from.rgb);
   const toChroma = colorChroma(to.rgb);
   const fromLuminance = luminance(from.rgb);
   const toLuminance = luminance(to.rgb);
-  const distance = colorDistance(from.rgb, to.rgb);
+  const distance = paletteColorDistance(from, to);
   const saturationMismatch = Math.abs(fromChroma - toChroma);
   const luminanceMismatch = Math.abs(fromLuminance - toLuminance);
   const bothDark = fromLuminance < 84 && toLuminance < 84;
@@ -743,22 +1092,6 @@ function majorityColor(colors: Array<string | null>): { colorId: string | null; 
     .sort((a, b) => b.count - a.count)[0] ?? { colorId: null, count: 0 };
 }
 
-function isBackgroundSample(
-  alpha: number,
-  rgb: [number, number, number],
-  options: ConvertOptions,
-  detectedBackgroundColor: [number, number, number],
-): boolean {
-  if (alpha < 24) return true;
-  if (options.backgroundMode === 'keep') return false;
-  const distance = Math.sqrt(
-    (rgb[0] - detectedBackgroundColor[0]) ** 2 +
-      (rgb[1] - detectedBackgroundColor[1]) ** 2 +
-      (rgb[2] - detectedBackgroundColor[2]) ** 2,
-  );
-  return distance <= options.tolerance;
-}
-
 function luminance(rgb: [number, number, number]): number {
   return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
 }
@@ -767,25 +1100,13 @@ function colorChroma(rgb: [number, number, number]): number {
   return Math.max(...rgb) - Math.min(...rgb);
 }
 
-function simplifySourceRgb(rgb: [number, number, number], strength: number): [number, number, number] {
-  const level = Math.max(0, Math.min(4, Math.round(strength)));
-  if (level === 0) return rgb;
-  const channelStep = [1, 5, 9, 14, 20][level];
-  const neutralThreshold = [0, 8, 14, 20, 28][level];
-  const chroma = colorChroma(rgb);
-  if (chroma <= neutralThreshold) {
-    const value = quantizeChannel(luminance(rgb), channelStep);
-    return [value, value, value];
-  }
-  return [
-    quantizeChannel(rgb[0], channelStep),
-    quantizeChannel(rgb[1], channelStep),
-    quantizeChannel(rgb[2], channelStep),
-  ];
-}
-
 function quantizeChannel(value: number, step: number): number {
   return Math.max(0, Math.min(255, Math.round(value / step) * step));
+}
+
+/** 5bit/通道网格中心，用于复用最近色缓存。 */
+function quantizeToBucket(value: number): number {
+  return Math.min(255, ((Math.round(value) >> 3) << 3) + 4);
 }
 
 function clampStrength(value: number): number {

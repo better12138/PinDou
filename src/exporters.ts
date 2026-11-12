@@ -39,7 +39,7 @@ export function downloadUsageCsv(project: BeadProject, usage: UsageRow[]): void 
     ['\u6bcf\u5305\u6570\u91cf', `${project.settings.beadsPerPack} \u9897/\u5305`],
     [],
   ];
-  const header = ['\u8272\u53f7\u54c1\u724c', '\u8272\u53f7', '\u989c\u8272\u540d\u79f0', 'HEX', '\u6570\u91cf', '\u9884\u8ba1\u5305\u6570'];
+  const header = ['\u8272\u53f7\u54c1\u724c', '\u8272\u53f7', '\u989c\u8272\u540d\u79f0', 'HEX', '\u6570\u91cf', '\u9884\u8ba1\u5305\u6570', '\u7f3a\u8272\u66ff\u4ee3'];
   const rows = usage.map((row) =>
     [
       project.activeBrand,
@@ -48,6 +48,9 @@ export function downloadUsageCsv(project: BeadProject, usage: UsageRow[]): void 
       row.color.hex,
       row.count,
       row.packs,
+      row.substitution
+        ? `\u7406\u60f3 ${mappedCode(row.substitution.ideal, project.activeBrand)}\uff0c\u8272\u5dee \u0394E ${row.substitution.deltaE.toFixed(1)}`
+        : '',
     ]
       .map(csvCell)
       .join(',')
@@ -448,7 +451,7 @@ type UsageWorkbookRow = Array<string | number>;
 function usageSheetRows(
   project: BeadProject,
   sheetTitle: string,
-  usage: Array<{ color: NonNullable<ReturnType<typeof getColor>>; count: number; packs: number }>,
+  usage: UsageRow[],
 ): UsageWorkbookRow[] {
   const totalBeads = usage.reduce((sum, row) => sum + row.count, 0);
   return [
@@ -460,7 +463,16 @@ function usageSheetRows(
     ['\u989c\u8272\u6570', usage.length],
     ['\u6bcf\u5305\u6570\u91cf', `${project.settings.beadsPerPack} \u9897/\u5305`],
     [],
-    ['\u8272\u53f7\u54c1\u724c', '\u8272\u53f7', '\u989c\u8272\u540d\u79f0', 'HEX', '\u6570\u91cf', '\u9884\u8ba1\u5305\u6570', '\u5907\u8d27\u5efa\u8bae\uff08+10%\uff09'],
+    [
+      '\u8272\u53f7\u54c1\u724c',
+      '\u8272\u53f7',
+      '\u989c\u8272\u540d\u79f0',
+      'HEX',
+      '\u6570\u91cf',
+      '\u9884\u8ba1\u5305\u6570',
+      '\u5907\u8d27\u5efa\u8bae\uff08+10%\uff09',
+      '\u7f3a\u8272\u66ff\u4ee3',
+    ],
     ...usage.map((row) => [
       project.activeBrand,
       mappedCode(row.color, project.activeBrand),
@@ -469,14 +481,14 @@ function usageSheetRows(
       row.count,
       row.packs,
       suggestStock(row.count),
+      row.substitution
+        ? `\u7406\u60f3 ${mappedCode(row.substitution.ideal, project.activeBrand)}\uff0c\u8272\u5dee \u0394E ${row.substitution.deltaE.toFixed(1)}`
+        : '',
     ]),
   ];
 }
 
-function summarizeLayerUsage(
-  project: BeadProject,
-  layers: BeadLayer[],
-): Array<{ color: NonNullable<ReturnType<typeof getColor>>; count: number; packs: number }> {
+function summarizeLayerUsage(project: BeadProject, layers: BeadLayer[]): UsageRow[] {
   const counts = new Map<string, number>();
   layers.forEach((layer) => {
     layer.cells.forEach((colorId) => {
@@ -487,7 +499,15 @@ function summarizeLayerUsage(
   return [...counts.entries()]
     .flatMap(([colorId, count]) => {
       const color = getColor(colorId);
-      return color ? [{ color, count, packs: Math.ceil(count / project.settings.beadsPerPack) }] : [];
+      if (!color) return [];
+      const substitution = project.substitutions?.[colorId];
+      const ideal = substitution ? getColor(substitution.idealId) : null;
+      return [{
+        color,
+        count,
+        packs: Math.ceil(count / project.settings.beadsPerPack),
+        ...(ideal && substitution ? { substitution: { ideal, deltaE: substitution.deltaE } } : {}),
+      }];
     })
     .sort((a, b) => b.count - a.count || mappedCode(a.color, project.activeBrand).localeCompare(mappedCode(b.color, project.activeBrand)));
 }

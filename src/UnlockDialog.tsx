@@ -11,6 +11,14 @@ export default function UnlockDialog({ onClose }: Props) {
   const [succeeded, setSucceeded] = React.useState(false);
   const credits = getCredits();
 
+  React.useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
   function submit() {
     const result = redeemCode(value);
     if (result.ok) {

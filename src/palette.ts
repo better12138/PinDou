@@ -558,9 +558,10 @@ export function getColor(id: string | null): PaletteColor | undefined {
   return colorIndex.get(id);
 }
 
-// 量化时要对几十万次采样找最近色。按 5bit/通道做缓存键，把重复的色板扫描变成查表；
-// 缓存挂在色板数组上（WeakMap 不阻止 GC），候选色板不变时结果一致，误差在拼豆色阶内可忽略。
+// 量化时要对大量采样找最近色。缓存挂在色板数组上（WeakMap 不阻止 GC），
+// 使用精确 24bit RGB 键，避免同一 5bit 桶内的不同颜色复用错误的匹配结果。
 const nearestCaches = new WeakMap<PaletteColor[], Map<number, PaletteColor>>();
+const nearestCacheLimit = 60000;
 
 export function nearestPaletteColor(
   rgb: [number, number, number],
@@ -571,7 +572,7 @@ export function nearestPaletteColor(
     cache = new Map();
     nearestCaches.set(candidates, cache);
   }
-  const key = ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3);
+  const key = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
   const cached = cache.get(key);
   if (cached) return cached;
   let best = candidates[0];
@@ -583,6 +584,7 @@ export function nearestPaletteColor(
       bestDistance = distance;
     }
   }
+  if (cache.size >= nearestCacheLimit) cache.clear();
   cache.set(key, best);
   return best;
 }
@@ -595,21 +597,24 @@ export function colorDistance(a: [number, number, number], b: [number, number, n
   return Math.sqrt((2 + redMean / 256) * r * r + 4 * g * g + (2 + (255 - redMean) / 256) * blue * blue);
 }
 
-type Lab = [number, number, number];
+export type Lab = [number, number, number];
 
 // Lab 转换按 24bit RGB 缓存：色板匹配会对同一批像素反复比较，转换一次即可。
 const labCache = new Map<number, Lab>();
+// 阈值统一到 ΔE00 后逐格比较也会进缓存；设上限避免长会话内存无界增长。
+const labCacheLimit = 60000;
 
 function labOf(rgb: [number, number, number]): Lab {
   const key = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
   const cached = labCache.get(key);
   if (cached) return cached;
   const lab = rgbToLab(rgb);
+  if (labCache.size >= labCacheLimit) labCache.clear();
   labCache.set(key, lab);
   return lab;
 }
 
-function rgbToLab(rgb: [number, number, number]): Lab {
+export function rgbToLab(rgb: [number, number, number]): Lab {
   const r = srgbToLinear(rgb[0]);
   const g = srgbToLinear(rgb[1]);
   const b = srgbToLinear(rgb[2]);
@@ -630,24 +635,73 @@ function labPivot(value: number): number {
 }
 
 /**
- * 人眼感知色差（CIEDE2000），用于“找最接近的拼豆色”。
- * 注意：不要拿它和 `colorDistance` 的阈值比较——阈值逻辑仍按 RGB 距离标定。
+ * 人眼感知色差（CIEDE2000）。全项目的色差判断（找最近色、去噪、合并、色差标注）
+ * 统一走这里；`colorDistance` 只保留给“背景容差”这类按单通道 RGB 标定的老参数。
  */
 export function colorDistanceLab(a: [number, number, number], b: [number, number, number]): number {
   return deltaE2000(labOf(a), labOf(b));
 }
 
+/**
+ * 合并/去噪强度的感知阈值（CIEDE2000，下标即 0~4 档强度）。
+ *
+ * 标定依据（scripts/regression/lab-thresholds.mjs 可复算）：
+ * - ΔE00 ≈ 1 是刚能察觉的下限，2~3 已经能看出“不是同一颗豆”；
+ * - 现有色卡的最近邻色差中位数：MARD 291 色 4.0、Artkal 176 色 5.3，
+ *   也就是说 4~5 就是“同一色族里最接近的两颗豆”的距离；
+ * - 因此：≤3 视为几乎同色（正常清理即可合并），5 为同色族内可替换，
+ *   7.5 属于同色相深浅差，10 是只有最强档才允许的跨明度合并。
+ * 旧实现用的是 RGB 欧氏距离 26/42/62/84，在中间色区恰好对应 ΔE00 3.8/6.1/9.0/12.2，
+ * 新表在最强两档略收紧，避免把肉眼可分辨的颜色也压平。
+ */
+export const mergeThresholdByLevel: readonly number[] = [0, 3, 5, 7.5, 10];
+
+/**
+ * 历史 RGB 距离阈值 → CIEDE2000 的换算（分档线性插值）。
+ * 只用于把“早期按 RGB 距离调出来的阈值”平移到感知空间；新逻辑优先直接写 ΔE00 常量。
+ * 数据来源：MARD 467 色 + Artkal 176 色两两配对（约 10 万对），统计每档 ΔE00/RGB 的中位数比值。
+ */
+const rgbToDeltaEStops: ReadonlyArray<readonly [number, number]> = [
+  [0, 0.21],
+  [30, 0.2],
+  [50, 0.19],
+  [80, 0.185],
+  [120, 0.178],
+  [200, 0.16],
+  [400, 0.137],
+];
+
+export function rgbThresholdToDeltaE(rgbDistance: number): number {
+  if (rgbDistance <= 0) return 0;
+  for (let index = 1; index < rgbToDeltaEStops.length; index += 1) {
+    const [x1, y1] = rgbToDeltaEStops[index];
+    if (rgbDistance <= x1) {
+      const [x0, y0] = rgbToDeltaEStops[index - 1];
+      const ratio = y0 + ((y1 - y0) * (rgbDistance - x0)) / (x1 - x0);
+      return rgbDistance * ratio;
+    }
+  }
+  return rgbDistance * rgbToDeltaEStops[rgbToDeltaEStops.length - 1][1];
+}
+
 function deltaE2000(lab1: Lab, lab2: Lab): number {
-  const [l1, a1, b1] = lab1;
-  const [l2, a2, b2] = lab2;
-  const c1 = Math.hypot(a1, b1);
-  const c2 = Math.hypot(a2, b2);
+  const l1 = lab1[0];
+  const a1 = lab1[1];
+  const b1 = lab1[2];
+  const l2 = lab2[0];
+  const a2 = lab2[1];
+  const b2 = lab2[2];
+  // 这里刻意用 sqrt 代替 hypot、复用 7 次方结果：逐像素找最近色时这是最热的一段，
+  // 公式与结果保持不变。
+  const c1 = Math.sqrt(a1 * a1 + b1 * b1);
+  const c2 = Math.sqrt(a2 * a2 + b2 * b2);
   const cBar = (c1 + c2) / 2;
-  const g = 0.5 * (1 - Math.sqrt(cBar ** 7 / (cBar ** 7 + 25 ** 7)));
+  const cBar7 = cBar ** 7;
+  const g = 0.5 * (1 - Math.sqrt(cBar7 / (cBar7 + 25 ** 7)));
   const a1p = (1 + g) * a1;
   const a2p = (1 + g) * a2;
-  const c1p = Math.hypot(a1p, b1);
-  const c2p = Math.hypot(a2p, b2);
+  const c1p = Math.sqrt(a1p * a1p + b1 * b1);
+  const c2p = Math.sqrt(a2p * a2p + b2 * b2);
   const h1p = hueAngle(b1, a1p);
   const h2p = hueAngle(b2, a2p);
   const dLp = l2 - l1;
@@ -674,8 +728,10 @@ function deltaE2000(lab1: Lab, lab2: Lab): number {
     0.32 * Math.cos(((3 * hBarP + 6) * Math.PI) / 180) -
     0.2 * Math.cos(((4 * hBarP - 63) * Math.PI) / 180);
   const dTheta = 30 * Math.exp(-(((hBarP - 275) / 25) ** 2));
-  const rc = 2 * Math.sqrt(cBarP ** 7 / (cBarP ** 7 + 25 ** 7));
-  const sl = 1 + (0.015 * (lBarP - 50) ** 2) / Math.sqrt(20 + (lBarP - 50) ** 2);
+  const cBarP7 = cBarP ** 7;
+  const rc = 2 * Math.sqrt(cBarP7 / (cBarP7 + 25 ** 7));
+  const lOffset = lBarP - 50;
+  const sl = 1 + (0.015 * lOffset * lOffset) / Math.sqrt(20 + lOffset * lOffset);
   const sc = 1 + 0.045 * cBarP;
   const sh = 1 + 0.015 * cBarP * t;
   const rt = -Math.sin((2 * dTheta * Math.PI) / 180) * rc;

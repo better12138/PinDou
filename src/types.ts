@@ -75,6 +75,10 @@ export type BeadProject = {
   activeLayerId: string;
   settings: ProjectSettings;
   boardSettings: BoardSettings;
+  /** 生成时因库存缺色而使用的替代记录：实际色号 → 理想色号与色差(ΔE00)。 */
+  substitutions?: Record<string, { idealId: string; deltaE: number }>;
+  /** 分色打卡进度：色号 → 已完成颗数。 */
+  progress?: Record<string, number>;
   createdAt: string;
   updatedAt: string;
 };
@@ -83,6 +87,10 @@ export type UsageRow = {
   color: PaletteColor;
   count: number;
   packs: number;
+  /** 该色号是库存缺色后的替代色时，记录本来最接近的理想色与色差。 */
+  substitution?: { ideal: PaletteColor; deltaE: number };
+  /** 分色打卡：该色号已完成的颗数。 */
+  done?: number;
 };
 
 export type BackgroundMode = 'keep' | 'remove-white';
@@ -94,11 +102,24 @@ export type ConvertOptions = {
   bounds?: { width: number; height: number };
   maxColors: number;
   palette?: PaletteColor[];
+  /** 色卡全量（不受库存限制）。传入后会统计“库存缺色 → 用了哪个替代色”。 */
+  idealPalette?: PaletteColor[];
   backgroundMode: BackgroundMode;
   backgroundColor: [number, number, number];
   tolerance: number;
   speckleReduction: number;
   generationStyle: GenerationStyle;
+};
+
+export type ColorSubstitution = {
+  /** 实际使用的色号（在库存里） */
+  colorId: string;
+  /** 色卡里最接近、但不在库存里的理想色号 */
+  idealId: string;
+  /** 实际色与理想色的 CIEDE2000 色差 */
+  deltaE: number;
+  /** 受影响格子数 */
+  cells: number;
 };
 
 export type ConvertResult = {
@@ -107,4 +128,5 @@ export type ConvertResult = {
   cells: Array<string | null>;
   colorsUsed: number;
   totalBeads: number;
+  substitutions?: ColorSubstitution[];
 };

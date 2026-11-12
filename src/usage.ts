@@ -17,13 +17,18 @@ export function summarizeUsage(project: BeadProject): UsageRow[] {
   }
 
   return [...counts.entries()]
-    .map(([id, count]) => {
+    .map(([id, count]): UsageRow | null => {
       const color = getColor(id);
       if (!color) return null;
+      // 库存缺色时生成过程会记下“实际色 → 理想色”，用量清单里同步展示。
+      const substitution = project.substitutions?.[id];
+      const ideal = substitution ? getColor(substitution.idealId) : null;
       return {
         color,
         count,
         packs: Math.ceil(count / project.settings.beadsPerPack),
+        done: Math.max(0, Math.min(count, project.progress?.[id] ?? 0)),
+        ...(ideal && substitution ? { substitution: { ideal, deltaE: substitution.deltaE } } : {}),
       };
     })
     .filter((row): row is UsageRow => Boolean(row))

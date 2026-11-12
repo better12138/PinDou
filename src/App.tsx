@@ -1,5 +1,6 @@
 ﻿import WorkspaceCanvas from './WorkspaceCanvas';
 import ThreePreview from './ThreePreview';
+import CompareDialog from './CompareDialog';
 import UnlockDialog from './UnlockDialog';
 import { consumeCredit, getCredits, subscribeCredits } from './license';
 import { downloadPrintPdf, downloadPrintPng, downloadProjectJson, downloadUsageWorkbook } from './exporters';
@@ -9,14 +10,18 @@ import { clearSourceImage, loadSourceImage, saveSourceImage } from './sourceImag
 import { cutoutPortrait } from './cutout';
 import { buildFrameRect, cropImageFile, detectPortraitFrame, drawFramePreview } from './autoframe';
 import type { FrameRect } from './autoframe';
-import { artkalPalette, basicPalette, colorDistance, completePalette, getColor, mappedCode, nearestPaletteColor } from './palette';
+import { artkalPalette, basicPalette, colorDistanceLab, completePalette, getColor, mappedCode, nearestPaletteColor, rgbThresholdToDeltaE } from './palette';
+import { emptyStock, loadStock, parseStockText, saveStock, substitutionGrade, type StockState } from './stock';
 import { composeVisibleCells, createLayer, createProject, loadDraft, normalizeProject, saveDraft, withCells, withLayers } from './project';
 import { findIsolatedBeads, suggestStock, summarizeUsage } from './usage';
-import type { ArrowKind, BackgroundMode, BeadProject, ClipboardPattern, CopyMode, GenerationStyle, MirrorDirection, MoveMode, RemoveMode, RightClickAction, ShapeFillMode, ShapeKind, TextDirection, ToolId } from './types';
+import type { ArrowKind, BackgroundMode, BeadProject, ClipboardPattern, ConvertResult, CopyMode, GenerationStyle, MirrorDirection, MoveMode, RemoveMode, RightClickAction, ShapeFillMode, ShapeKind, TextDirection, ToolId } from './types';
 
 const { useEffect, useMemo, useRef, useState } = React;
 
 type Language = 'zh' | 'en';
+
+/** 状态栏语气：进行中 / 成功 / 失败，用来区分同一条反馈通道上的三种语义。 */
+type NoticeTone = 'info' | 'ok' | 'busy' | 'error';
 
 const languageKey = 'perler-beads-generator:language';
 
@@ -163,6 +168,52 @@ const ui: Record<Language, any> = {
         packUnit: '包',
         noUsage: '暂无用量',
         brandCodes: '色号品牌',
+        stockTitle: '我的库存',
+        stockCount: (owned: number, total: number) => `已拥有 ${owned} / ${total} 色`,
+        stockEnable: '生成时只使用库存内的色号',
+        stockEnableHint: '库存里没有合适颜色时，会用最接近的豆子替代，并标出色差等级。',
+        stockSearch: '搜索色号或颜色名',
+        stockMarkMode: '标记库存',
+        stockMarkHint: '进入标记模式后，点色块即可切换「已拥有」。',
+        stockOnlyMarked: '只看已拥有',
+        stockSelectVisible: '全选当前筛选',
+        stockClear: '清空库存',
+        stockImport: '批量导入',
+        stockImportHint: '按色号粘贴，逗号、空格或换行分隔，例如 A1, B2, H7',
+        stockImported: (added: number, unknown: number) =>
+          unknown > 0 ? `已加入 ${added} 个色号，${unknown} 个无法识别。` : `已加入 ${added} 个色号。`,
+        stockEmptyHint: '还没有勾选库存，生成仍会使用整份色卡。',
+        stockApplied: (count: number) => `已按库存 ${count} 色生成。`,
+        stockTooFew: '库存少于 2 色，暂按整份色卡生成。',
+        substituteLabel: '缺色替代',
+        substituteHint: (ideal: string, deltaE: string, grade: string) => `理想色 ${ideal} 不在库存，色差 ΔE ${deltaE}（${grade}）`,
+        substituteSummary: (count: number) => `${count} 个色号来自缺色替代`,
+        substituteGradeFine: '几乎看不出',
+        substituteGradeSlight: '轻微偏差',
+        substituteGradeNoticeable: '明显偏差',
+        substituteGradeFar: '差异较大',
+        compareOpen: '原图对比',
+        compareTitle: '原图 vs 生成图',
+        compareHint: '并排看构图与配色偏差，叠加看每一格的颜色差异。',
+        compareSide: '并排',
+        compareOverlay: '叠加',
+        compareOpacity: '生成图透明度',
+        compareClose: '关闭对比',
+        compareMissing: '还没有原图：先导入一张图片生成，或上传参考图。',
+        compareOriginal: '原图',
+        comparePattern: '生成图',
+        checkProgress: '分色打卡',
+        checkProgressHint: '按色号勾选完成，进度会随项目保存，刷新或导出后仍能恢复。',
+        checkDone: (done: number, total: number) => `${done} / ${total}`,
+        checkAllDone: '全部完成',
+        checkReset: '重置进度',
+        checkToggle: '标记完成',
+        progressSummary: (done: number, total: number, percent: string) => `完成 ${done} / ${total} 颗（${percent}）`,
+        crossBrand: '跨品牌对照表',
+        crossBrandHint: '该色号在另一个品牌里最接近的可购买色号，以及两者色差。',
+        crossBrandOther: '对照色号',
+        crossBrandDelta: '色差 ΔE',
+        crossBrandGrade: '偏差',
         creditsLeft: (count: number) => `剩余 ${count} 次`,
         creditsTitle: '兑换码与导出次数',
         noCredits: '导出需要 1 次额度，请先兑换。',
@@ -410,6 +461,52 @@ const ui: Record<Language, any> = {
         packUnit: 'packs',
         noUsage: 'No usage yet',
         brandCodes: 'Brand codes',
+        stockTitle: 'My stock',
+        stockCount: (owned: number, total: number) => `${owned} / ${total} colors owned`,
+        stockEnable: 'Generate with my stock only',
+        stockEnableHint: 'When no close color is owned, the nearest bead is used and the color gap is graded.',
+        stockSearch: 'Search code or name',
+        stockMarkMode: 'Mark stock',
+        stockMarkHint: 'In mark mode, click a swatch to toggle ownership.',
+        stockOnlyMarked: 'Owned only',
+        stockSelectVisible: 'Select filtered',
+        stockClear: 'Clear stock',
+        stockImport: 'Bulk import',
+        stockImportHint: 'Paste codes separated by comma, space or new line, e.g. A1, B2, H7',
+        stockImported: (added: number, unknown: number) =>
+          unknown > 0 ? `${added} colors added, ${unknown} not recognized.` : `${added} colors added.`,
+        stockEmptyHint: 'No stock marked yet, generation still uses the full palette.',
+        stockApplied: (count: number) => `Generated with ${count} colors from your stock.`,
+        stockTooFew: 'Fewer than 2 colors in stock; using the full palette.',
+        substituteLabel: 'Substituted',
+        substituteHint: (ideal: string, deltaE: string, grade: string) => `Ideal ${ideal} is out of stock; color gap ΔE ${deltaE} (${grade})`,
+        substituteSummary: (count: number) => `${count} colors are stock substitutions`,
+        substituteGradeFine: 'Barely visible',
+        substituteGradeSlight: 'Slight shift',
+        substituteGradeNoticeable: 'Clearly visible',
+        substituteGradeFar: 'Large shift',
+        compareOpen: 'Compare with photo',
+        compareTitle: 'Photo vs pattern',
+        compareHint: 'Side by side for composition; overlay for per-cell color accuracy.',
+        compareSide: 'Side by side',
+        compareOverlay: 'Overlay',
+        compareOpacity: 'Pattern opacity',
+        compareClose: 'Close compare',
+        compareMissing: 'No source photo yet: import an image first.',
+        compareOriginal: 'Photo',
+        comparePattern: 'Pattern',
+        checkProgress: 'Bead-by-bead check-in',
+        checkProgressHint: 'Tick colors as you finish them. Progress is saved with the project.',
+        checkDone: (done: number, total: number) => `${done} / ${total}`,
+        checkAllDone: 'Mark all done',
+        checkReset: 'Reset progress',
+        checkToggle: 'Toggle done',
+        progressSummary: (done: number, total: number, percent: string) => `${done} / ${total} beads done (${percent})`,
+        crossBrand: 'Cross-brand chart',
+        crossBrandHint: 'Closest buyable color in the other brand, with the color gap.',
+        crossBrandOther: 'Other brand',
+        crossBrandDelta: 'ΔE',
+        crossBrandGrade: 'Deviation',
         creditsLeft: (count: number) => `${count} left`,
         creditsTitle: 'Credits and redemption',
         noCredits: 'Exports need 1 credit. Redeem a code first.',
@@ -537,6 +634,11 @@ function formatBrushSize(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
+/** 色板/库存共用：色号或颜色名的子串匹配（关键字已小写）。 */
+function matchesColor(color: { primaryCode: string; name: string }, keyword: string): boolean {
+  return color.primaryCode.toLowerCase().includes(keyword) || color.name.toLowerCase().includes(keyword);
+}
+
 const sizePresets = [
   { label: '29 * 29', width: 29, height: 29 },
   { label: '52 * 52', width: 52, height: 52 },
@@ -661,12 +763,13 @@ export default function App() {
   const [referenceOffset, setReferenceOffset] = useState({ x: 0, y: 0 });
   const [referenceAdjusting, setReferenceAdjusting] = useState(false);
   const [referencePlacement, setReferencePlacement] = useState<ReferencePlacement>('below');
+  const [showCompare, setShowCompare] = useState(false);
   const [canvasWidth, setCanvasWidth] = useState(project.width);
   const [canvasHeight, setCanvasHeight] = useState(project.height);
-  // 默认与当前画布宽度一致，但不锁定；勾选“跟随”后才持续同步。
+  // 默认跟随当前画布宽度，取消勾选后可手动设置。
   const [convertWidth, setConvertWidth] = useState(project.width);
   const [convertWidthEditTick, setConvertWidthEditTick] = useState(0);
-  const [syncConvertWidth, setSyncConvertWidth] = useState(false);
+  const [syncConvertWidth, setSyncConvertWidth] = useState(true);
   const [maxColors, setMaxColors] = useState(defaultImportSettings.maxColors);
   const [generationStyle, setGenerationStyle] = useState<GenerationStyle>(defaultImportSettings.generationStyle);
   const [backgroundMode, setBackgroundMode] = useState<BackgroundMode>(defaultImportSettings.backgroundMode);
@@ -682,6 +785,13 @@ export default function App() {
     offsetX: number;
   } | null>(null);
   const [notice, setNotice] = useState(text.workspaceReady);
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>('info');
+  const [isExporting, setIsExporting] = useState(false);
+  // 侧栏折叠只在 >=981px 生效；窄屏本来就改为上下堆叠。
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('perler-beads:left-collapsed') === '1');
+  const [rightCollapsed, setRightCollapsed] = useState(() => localStorage.getItem('perler-beads:right-collapsed') === '1');
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const [floatingHelp, setFloatingHelp] = useState<FloatingHelp | null>(null);
   const [hoverCell, setHoverCell] = useState<HoverCell | null>(null);
   const [highlightedColorId, setHighlightedColorId] = useState<string | null>(null);
@@ -693,11 +803,23 @@ export default function App() {
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [paletteMode, setPaletteMode] = useState<PaletteMode>('basic');
   const [paletteGroup, setPaletteGroup] = useState('all');
+  const [stock, setStock] = useState<StockState>(loadStock);
+  const [stockMarkMode, setStockMarkMode] = useState(false);
+  const [stockQuery, setStockQuery] = useState('');
+  const [stockOnlyOwned, setStockOnlyOwned] = useState(false);
+  const [stockImportText, setStockImportText] = useState('');
+  const [stockImportNotice, setStockImportNotice] = useState('');
   const [adjustments, setAdjustments] = useState<AdjustmentSettings>(defaultAdjustments);
   const [colorCleanupStrength, setColorCleanupStrength] = useState(2);
   const [layerColorLimit, setLayerColorLimit] = useState(16);
   const [past, setPast] = useState<BeadProject[]>([]);
   const [future, setFuture] = useState<BeadProject[]>([]);
+
+  function say(message: string, tone: NoticeTone = 'info') {
+    setNotice(message);
+    setNoticeTone(tone);
+  }
+
   const usage = useMemo(() => summarizeUsage(project), [project]);
   const totalBeads = usage.reduce((sum, row) => sum + row.count, 0);
   const totalPacks = usage.reduce((sum, row) => sum + row.packs, 0);
@@ -708,6 +830,22 @@ export default function App() {
   const finishedWidthCm = beadSizeCm(project.width, beadSizeMm);
   const finishedHeightCm = beadSizeCm(project.height, beadSizeMm);
   const totalStock = usage.reduce((sum, row) => sum + suggestStock(row.count), 0);
+  /** 分色打卡：已完成颗数 / 本轮统计的总颗数。 */
+  const doneBeads = usage.reduce((sum, row) => sum + (row.done ?? 0), 0);
+  const donePercent = totalBeads > 0 ? Math.round((doneBeads / totalBeads) * 100) : 0;
+  const crossBrandPalette = project.activeBrand === 'MARD' ? artkalPalette : completePalette;
+  const crossBrandLabel = project.activeBrand === 'MARD' ? 'Artkal' : 'MARD';
+  /** 跨品牌对照：当前用色在另一个品牌里最接近的可购买色号与色差。 */
+  const crossBrandRows = useMemo(
+    () =>
+      usage
+        .map((row) => {
+          const other = nearestPaletteColor(row.color.rgb, crossBrandPalette);
+          return { row, other, deltaE: colorDistanceLab(row.color.rgb, other.rgb) };
+        })
+        .sort((a, b) => a.deltaE - b.deltaE),
+    [usage, crossBrandPalette],
+  );
   const isolatedBeadRefs = useMemo(() => findIsolatedBeads(project), [project]);
   const isolatedBeads = isolatedBeadRefs.length;
   const isolatedCellIndices = useMemo(
@@ -731,11 +869,101 @@ export default function App() {
     () => (paletteGroup === 'all' ? activePalette : activePalette.filter((color) => color.group === paletteGroup)),
     [activePalette, paletteGroup],
   );
+  const stockSet = useMemo(() => new Set(stock.ids), [stock.ids]);
+  /** 当前品牌色卡里、用户已拥有颜色的数量（切换品牌/色卡后自动变化）。 */
+  const stockOwnedCount = useMemo(() => activePalette.filter((color) => stockSet.has(color.id)).length, [activePalette, stockSet]);
+  /** 库存白名单：少于 2 色时不可用（无法组成图案），回退到整份色卡并提示。 */
+  const stockedPalette = useMemo(() => activePalette.filter((color) => stockSet.has(color.id)), [activePalette, stockSet]);
+  const stockLimitActive = stock.enabled && stockedPalette.length >= 2;
+  const generationPalette = stockLimitActive ? stockedPalette : activePalette;
+  /** 理想色参照：该品牌的完整色卡，用来判断“本来更该用哪颗豆”。 */
+  const idealPalette = project.activeBrand === 'ARTKAL' ? artkalPalette : completePalette;
+  const stockFilteredPalette = useMemo(() => {
+    const keyword = stockQuery.trim().toLowerCase();
+    const paletteKeyword = paletteQuery.trim().toLowerCase();
+    return visiblePalette.filter((color) => {
+      if (stockOnlyOwned && !stockSet.has(color.id)) return false;
+      if (keyword && !matchesColor(color, keyword)) return false;
+      if (paletteKeyword && !matchesColor(color, paletteKeyword)) return false;
+      return true;
+    });
+  }, [visiblePalette, stockQuery, paletteQuery, stockOnlyOwned, stockSet]);
+
+  useEffect(() => {
+    saveStock(stock);
+  }, [stock]);
+
+  function toggleStockColor(colorId: string) {
+    setStock((current) => {
+      const owned = current.ids.includes(colorId);
+      const ids = owned ? current.ids.filter((id) => id !== colorId) : [...current.ids, colorId];
+      // 勾上第一个色号即视为开始维护库存，直接启用限定；清空则关闭。
+      return { ids, enabled: ids.length > 0 ? (owned ? current.enabled : true) : false };
+    });
+  }
+
+  function selectVisibleStock() {
+    if (stockFilteredPalette.length === 0) return;
+    setStock((current) => ({
+      ids: [...new Set([...current.ids, ...stockFilteredPalette.map((color) => color.id)])],
+      enabled: true,
+    }));
+    setStockImportNotice(text.stockImported(stockFilteredPalette.length, 0));
+  }
+
+  function clearStock() {
+    setStock(emptyStock);
+    setStockImportNotice('');
+    setStockOnlyOwned(false);
+  }
+
+  function applyStockImport() {
+    const { ids, unknown } = parseStockText(stockImportText, activePalette, project.activeBrand);
+    if (ids.length === 0) {
+      setStockImportNotice(text.stockImported(0, unknown.length));
+      return;
+    }
+    const added = ids.filter((id) => !stockSet.has(id)).length;
+    setStock((current) => ({ ids: [...new Set([...current.ids, ...ids])], enabled: true }));
+    setStockImportNotice(text.stockImported(added, unknown.length));
+    setStockImportText('');
+  }
+
+  /** 缺色替代的色差等级文案，按 CIEDE2000 分段。 */
+  function substituteGradeLabel(deltaE: number): string {
+    const grade = substitutionGrade(deltaE);
+    if (grade === 'fine') return text.substituteGradeFine;
+    if (grade === 'slight') return text.substituteGradeSlight;
+    if (grade === 'noticeable') return text.substituteGradeNoticeable;
+    return text.substituteGradeFar;
+  }
+
+  /** 分色打卡：按色号切换“整色完成 / 未完成”，进度存进项目里。 */
+  function toggleColorDone(colorId: string, count: number) {
+    const progress = { ...(project.progress ?? {}) };
+    if ((progress[colorId] ?? 0) >= count) delete progress[colorId];
+    else progress[colorId] = count;
+    updateProject({ ...project, progress });
+  }
+
+  function markAllColorsDone() {
+    const progress = { ...(project.progress ?? {}) };
+    usage.forEach((row) => {
+      progress[row.color.id] = row.count;
+    });
+    updateProject({ ...project, progress });
+  }
+
+  function resetProgress() {
+    if (!project.progress) return;
+    const next = { ...project };
+    delete next.progress;
+    updateProject(next);
+  }
 
   function displayCode(color: NonNullable<typeof selectedColor>): string {
     return mappedCode(color, project.activeBrand);
   }
-
   function displayName(color: NonNullable<typeof selectedColor>): string {
     return color.name;
   }
@@ -816,6 +1044,23 @@ export default function App() {
     localStorage.setItem(languageKey, language);
     document.documentElement.lang = language;
   }, [language]);
+
+  useEffect(() => {
+    localStorage.setItem('perler-beads:left-collapsed', leftCollapsed ? '1' : '0');
+  }, [leftCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem('perler-beads:right-collapsed', rightCollapsed ? '1' : '0');
+  }, [rightCollapsed]);
+
+  useEffect(() => {
+    if (!showShortcuts) return;
+    function onShortcutKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setShowShortcuts(false);
+    }
+    window.addEventListener('keydown', onShortcutKeyDown);
+    return () => window.removeEventListener('keydown', onShortcutKeyDown);
+  }, [showShortcuts]);
 
   useEffect(() => {
     if (!showPrintExportPanel) return;
@@ -900,7 +1145,7 @@ export default function App() {
     }, 420);
     return () => window.clearTimeout(timer);
     // 只响应用户主动改宽度（tick），画布尺寸或同步引起的宽度变化不应触发重新生成。
-  }, [pendingFile, convertWidthEditTick, maxColors, generationStyle, backgroundMode, tolerance, paletteMode, project.activeBrand]);
+  }, [pendingFile, convertWidthEditTick, maxColors, generationStyle, backgroundMode, tolerance, paletteMode, project.activeBrand, stock.ids, stock.enabled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -942,7 +1187,7 @@ export default function App() {
   function requestExport(kind: 'pattern' | 'usage') {
     setShowPrintExportPanel(false);
     if (getCredits() < 1) {
-      setNotice(text.noCredits);
+      say(text.noCredits, 'error');
       setShowUnlock(true);
       return;
     }
@@ -981,9 +1226,15 @@ export default function App() {
 
   useEffect(() => {
     function onToolKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
       const target = event.target;
       if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [role="textbox"]'))) return;
+      if (event.key === '?') {
+        event.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
+      if (event.shiftKey) return;
 
       const nextTool = tools.find((item) => item.shortcut.toLowerCase() === event.key.toLowerCase());
       if (!nextTool) return;
@@ -1159,7 +1410,7 @@ export default function App() {
     });
     setReferenceVisible(false);
     resetReferenceTransform();
-    setNotice(language === 'zh' ? `已创建 ${width} * ${height} 空白画布。` : `Blank ${width} x ${height} canvas created.`);
+    say(language === 'zh' ? `已创建 ${width} * ${height} 空白画布。` : `Blank ${width} x ${height} canvas created.`, 'ok');
   }
 
   function clearCanvas() {
@@ -1167,7 +1418,7 @@ export default function App() {
     if (activeLayer.cells.every((cell) => cell === null)) return;
     commitHistory();
     updateProject(withCells(project, Array.from({ length: project.width * project.height }, () => null)));
-    setNotice(language === 'zh' ? '画布已清空。' : 'Canvas cleared.');
+    say(language === 'zh' ? '画布已清空，可用撤销恢复。' : 'Canvas cleared — undo restores it.', 'ok');
   }
 
   async function resizeCanvas(targetWidth?: number, targetHeight?: number) {
@@ -1188,13 +1439,14 @@ export default function App() {
       ...layer,
       cells: rescaleCellsToFit(layer.cells, sourceProject.width, sourceProject.height, width, height),
     }));
-    const commitLayers = (nextLayers: typeof scaledLayers) => {
+    const commitLayers = (nextLayers: typeof scaledLayers, substitutions?: ReturnType<typeof toSubstitutionRecord>) => {
       updateProject({
         ...sourceProject,
         width,
         height,
         layers: nextLayers,
         cells: composeVisibleCells(nextLayers, width, height),
+        ...(substitutions ? { substitutions } : {}),
       });
     };
 
@@ -1222,7 +1474,8 @@ export default function App() {
         width: generateWidth,
         bounds: { width, height },
         maxColors,
-        palette: activePalette,
+        palette: generationPalette,
+        idealPalette: stockLimitActive ? idealPalette : undefined,
         generationStyle,
         backgroundMode,
         backgroundColor: [255, 255, 255],
@@ -1234,7 +1487,7 @@ export default function App() {
       const nextLayers = scaledLayers.map((layer) => (layer.id === imageLayer!.id ? { ...layer, cells } : layer));
       sourceLayerIdRef.current = imageLayer!.id;
       void saveSourceImage(pendingFile, pendingFile.name, imageLayer!.id);
-      commitLayers(nextLayers);
+      commitLayers(nextLayers, toSubstitutionRecord(result.substitutions));
       setNotice(
         language === 'zh'
           ? `画布已调整为 ${width} * ${height}，并按原图重新生成：${result.colorsUsed} 色 - ${result.totalBeads} 颗。`
@@ -1267,7 +1520,7 @@ export default function App() {
 
   function handleImageFile(file: File) {
     if (!file.type.match(/^image\/(png|jpeg|jpg|webp)$/)) {
-      setNotice(language === 'zh' ? '请使用 PNG、JPG、JPEG 或 WebP 图片。' : 'Use a PNG, JPG, JPEG, or WebP image.');
+      say(language === 'zh' ? '请使用 PNG、JPG、JPEG 或 WebP 图片。' : 'Use a PNG, JPG, JPEG, or WebP image.', 'error');
       return;
     }
     // 换图时丢弃仍在进行的取景会话，避免旧结果作用到新图片上。
@@ -1288,13 +1541,13 @@ export default function App() {
     });
     resetReferenceTransform();
     autoGenerateShouldCommitRef.current = true;
-    setNotice(language === 'zh' ? `正在生成 ${file.name}...` : `Generating ${file.name}...`);
+    say(language === 'zh' ? `正在生成 ${file.name}...` : `Generating ${file.name}...`, 'busy');
   }
 
   async function handlePortraitCutout() {
     if (!pendingFile || isCutting) return;
     setIsCutting(true);
-    setNotice(language === 'zh' ? '正在识别人像并去除背景...' : 'Detecting portrait and removing background...');
+    say(language === 'zh' ? '正在识别人像并去除背景...' : 'Detecting portrait and removing background...', 'busy');
     try {
       const cutoutFile = await cutoutPortrait(pendingFile);
       setPendingFile(cutoutFile);
@@ -1304,9 +1557,9 @@ export default function App() {
       });
       setBackgroundMode('keep');
       autoGenerateShouldCommitRef.current = true;
-      setNotice(language === 'zh' ? '已去除背景，正在生成透明底图案。' : 'Background removed. Generating a transparent pattern.');
+      say(language === 'zh' ? '已去除背景，正在生成透明底图案。' : 'Background removed. Generating a transparent pattern.', 'busy');
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : language === 'zh' ? '抠图失败，请重试。' : 'Cutout failed, please retry.');
+      say(error instanceof Error ? error.message : language === 'zh' ? '抠图失败，请重试。' : 'Cutout failed, please retry.', 'error');
     } finally {
       setIsCutting(false);
     }
@@ -1317,15 +1570,15 @@ export default function App() {
     const requestId = frameRequestRef.current + 1;
     frameRequestRef.current = requestId;
     setIsFraming(true);
-    setNotice(language === 'zh' ? '正在定位人脸...' : 'Locating the face...');
+    say(language === 'zh' ? '正在定位人脸...' : 'Locating the face...', 'busy');
     try {
       const result = await detectPortraitFrame(pendingFile);
       if (requestId !== frameRequestRef.current) return;
       setFrameSession({ file: pendingFile, face: result.face, headroom: 0.45, scale: 1, offsetX: 0 });
-      setNotice(text.frameDetected);
+      say(text.frameDetected, 'ok');
     } catch (error) {
       if (requestId !== frameRequestRef.current) return;
-      setNotice(error instanceof Error ? error.message : language === 'zh' ? '取景失败，请重试。' : 'Framing failed, please retry.');
+      say(error instanceof Error ? error.message : language === 'zh' ? '取景失败，请重试。' : 'Framing failed, please retry.', 'error');
     } finally {
       if (requestId === frameRequestRef.current) setIsFraming(false);
     }
@@ -1342,15 +1595,15 @@ export default function App() {
         return URL.createObjectURL(framed);
       });
       autoGenerateShouldCommitRef.current = true;
-      setNotice(language === 'zh' ? '已按人像构图裁剪，正在生成图案。' : 'Portrait framing applied. Generating the pattern.');
+      say(language === 'zh' ? '已按人像构图裁剪，正在生成图案。' : 'Portrait framing applied. Generating the pattern.', 'busy');
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : language === 'zh' ? '取景失败，请重试。' : 'Framing failed, please retry.');
+      say(error instanceof Error ? error.message : language === 'zh' ? '取景失败，请重试。' : 'Framing failed, please retry.', 'error');
     }
   }
 
   function handleReferenceImageFile(file: File) {
     if (!file.type.match(/^image\/(png|jpeg|jpg|webp)$/)) {
-      setNotice(language === 'zh' ? '请使用 PNG、JPG、JPEG 或 WebP 图片。' : 'Use a PNG, JPG, JPEG, or WebP image.');
+      say(language === 'zh' ? '请使用 PNG、JPG、JPEG 或 WebP 图片。' : 'Use a PNG, JPG, JPEG, or WebP image.', 'error');
       return;
     }
     setReferenceFile(file);
@@ -1360,7 +1613,7 @@ export default function App() {
     });
     resetReferenceTransform();
     setReferenceVisible(true);
-    setNotice(language === 'zh' ? `${file.name} 已设为参考图。` : `${file.name} set as reference image.`);
+    say(language === 'zh' ? `${file.name} 已设为参考图。` : `${file.name} set as reference image.`, 'ok');
   }
 
   async function generateFromImage(options: { recordHistory?: boolean; automatic?: boolean } = {}) {
@@ -1375,14 +1628,15 @@ export default function App() {
     const sourceProject = project;
     const sourceLayers = layers;
     setIsGenerating(true);
-    setNotice(language === 'zh' ? '正在本地更新拼豆图案...' : 'Updating bead pattern locally...');
+    say(language === 'zh' ? '正在本地更新拼豆图案...' : 'Updating bead pattern locally...', 'busy');
     try {
       const result = await imageFileToBeads(pendingFile, {
         width: convertWidth,
         // 先按画板大小收敛生成尺寸，再做居中，避免「先生成大图再缩小」造成的锯齿和细节丢失。
         bounds: { width: sourceProject.width, height: sourceProject.height },
         maxColors,
-        palette: activePalette,
+        palette: generationPalette,
+        idealPalette: stockLimitActive ? idealPalette : undefined,
         generationStyle,
         backgroundMode,
         backgroundColor: [255, 255, 255],
@@ -1418,16 +1672,26 @@ export default function App() {
         activeLayerId: targetLayerId,
         layers: nextLayers,
         cells: composeVisibleCells(nextLayers, nextWidth, nextHeight),
+        // 库存限定下生成会留下替代记录，用量清单据此标注"能看但有色差"的色号。
+        substitutions: toSubstitutionRecord(result.substitutions),
       };
       updateProject(nextProject);
-      setNotice(
+      const substituted = result.substitutions?.length ?? 0;
+      const baseNotice =
         language === 'zh'
           ? `${result.colorsUsed} 色 - ${result.totalBeads} 颗 - 可编辑图案已生成。`
-          : `${result.colorsUsed} colors - ${result.totalBeads} beads - editable pattern ready.`,
+          : `${result.colorsUsed} colors - ${result.totalBeads} beads - editable pattern ready.`;
+      say(
+        substituted > 0
+          ? `${baseNotice} ${text.substituteSummary(substituted)}`
+          : stockLimitActive
+            ? `${baseNotice} ${text.stockApplied(stockedPalette.length)}`
+            : baseNotice,
+        'ok',
       );
     } catch (error) {
       if (requestId !== generationRequestRef.current) return;
-      setNotice(error instanceof Error ? error.message : 'Could not generate this image.');
+      say(error instanceof Error ? error.message : 'Could not generate this image.', 'error');
     } finally {
       if (requestId === generationRequestRef.current) setIsGenerating(false);
     }
@@ -1454,7 +1718,7 @@ export default function App() {
     });
     sourceLayerIdRef.current = null;
     void clearSourceImage();
-    setNotice(text.recordImported);
+    say(text.recordImported, 'ok');
   }
 
   function exportUsageList() {
@@ -1463,7 +1727,7 @@ export default function App() {
 
   function exportEditRecord() {
     downloadProjectJson(project);
-    setNotice(text.recordExported);
+    say(text.recordExported, 'ok');
   }
 
   function resetClipboard() {
@@ -1718,37 +1982,57 @@ export default function App() {
 
   function confirmExport() {
     const kind = pendingExport;
-    if (!kind) return;
+    if (!kind || isExporting) return;
     // 确认时再次检查并扣次，处理另一个标签页已先用掉额度的情况。
     if (!consumeCredit()) {
       setPendingExport(null);
-      setNotice(text.noCredits);
+      say(text.noCredits, 'error');
       setShowUnlock(true);
       return;
     }
     setCreditCount(getCredits());
     setPendingExport(null);
+    setIsExporting(true);
+    say(language === 'zh' ? '正在生成导出文件…' : 'Preparing export…', 'busy');
 
-    if (kind === 'usage') {
-      downloadUsageWorkbook(project);
-      setNotice(text.usageExported);
-      return;
-    }
-    const exportOptions = {
-      ...printExportOptions,
-      projectName: printExportOptions.projectName?.trim() || defaultPrintNickname,
-      layerLabelPrefix: language === 'en' ? 'Layer' : '图层',
-    };
-    if (printExportOptions.format === 'pdf') {
-      downloadPrintPdf(project, exportOptions);
-    } else {
-      downloadPrintPng(project, exportOptions);
-    }
+    // 生成是同步的，先让「导出中」状态渲染一帧，再执行下载并复位按钮。
+    window.setTimeout(() => {
+      try {
+        if (kind === 'usage') {
+          downloadUsageWorkbook(project);
+          say(text.usageExported, 'ok');
+          return;
+        }
+        const exportOptions = {
+          ...printExportOptions,
+          projectName: printExportOptions.projectName?.trim() || defaultPrintNickname,
+          layerLabelPrefix: language === 'en' ? 'Layer' : '图层',
+        };
+        if (printExportOptions.format === 'pdf') {
+          downloadPrintPdf(project, exportOptions);
+        } else {
+          downloadPrintPng(project, exportOptions);
+        }
+        say(
+          language === 'zh'
+            ? `图纸已导出（${(printExportOptions.format ?? 'png').toUpperCase()}），可在下载目录查看。`
+            : `Pattern exported as ${(printExportOptions.format ?? 'png').toUpperCase()}.`,
+          'ok',
+        );
+      } catch (error) {
+        say(
+          error instanceof Error ? error.message : language === 'zh' ? '导出失败，请重试。' : 'Export failed, please retry.',
+          'error',
+        );
+      } finally {
+        setIsExporting(false);
+      }
+    }, 40);
   }
 
   return (
     <main
-      className="app-shell"
+      className={`app-shell${leftCollapsed ? ' left-collapsed' : ''}${rightCollapsed ? ' right-collapsed' : ''}`}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
         event.preventDefault();
@@ -1785,7 +2069,7 @@ export default function App() {
         accept="application/json,.json"
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
-          if (file) importJson(file).catch((error) => setNotice(error.message));
+          if (file) importJson(file).catch((error) => say(error.message, 'error'));
           event.currentTarget.value = '';
         }}
       />
@@ -1854,10 +2138,11 @@ export default function App() {
                   className="export-action-button primary-action print-export-button"
                   title={`${text.exportPatternTitle} PNG`}
                   aria-expanded={showPrintExportPanel}
+                  disabled={isExporting}
                   onClick={() => setShowPrintExportPanel((value) => !value)}
                 >
                   <ExportIcon />
-                  <span>{text.exportPatternFull}</span>
+                  <span>{isExporting ? (language === 'zh' ? '导出中…' : 'Exporting…') : text.exportPatternFull}</span>
                 </button>
                 {showPrintExportPanel && (
                   <div className="print-export-popover">
@@ -1936,15 +2221,15 @@ export default function App() {
                         onChange={(event) => setPrintExportOptions((current) => ({ ...current, paginateByBoard: event.target.checked }))}
                       />
                     </label>
-                    <button className="export-submit-button" onClick={exportPrintPattern}>
-                      {text.exportNow} {(printExportOptions.format ?? 'png').toUpperCase()}
+                    <button className="export-submit-button" onClick={exportPrintPattern} disabled={isExporting}>
+                      {isExporting ? (language === 'zh' ? '导出中…' : 'Exporting…') : `${text.exportNow} ${(printExportOptions.format ?? 'png').toUpperCase()}`}
                     </button>
                   </div>
                 )}
               </div>
-              <button className="export-action-button" title={text.exportUsageTitle} onClick={exportUsageList}>{text.exportUsageFull}</button>
-              <button className="export-action-button" title={text.exportRecordTitle} onClick={exportEditRecord}>{text.exportRecordFull}</button>
-              <button className="export-action-button" title={text.importRecordTitle} onClick={() => jsonInputRef.current?.click()}>{text.importRecordFull}</button>
+              <button className="export-action-button" title={text.exportUsageTitle} onClick={exportUsageList} disabled={isExporting}>{text.exportUsageFull}</button>
+              <button className="export-action-button" title={text.exportRecordTitle} onClick={exportEditRecord} disabled={isExporting}>{text.exportRecordFull}</button>
+              <button className="export-action-button" title={text.importRecordTitle} onClick={() => jsonInputRef.current?.click()} disabled={isExporting}>{text.importRecordFull}</button>
             </div>
           </div>
         </div>
@@ -1973,11 +2258,47 @@ export default function App() {
 
       <div className="project-toolbar" role="toolbar" aria-label={language === 'zh' ? '编辑操作' : 'Edit actions'}>
             <div className="project-actions">
-              <button className="project-action-button primary-action" onClick={() => startBlank(52, 52)}><PlusIcon /><span>{text.new}</span></button>
-              <button className="project-action-button" onClick={clearCanvas}><TrashIcon /><span>{text.clear}</span></button>
+              <button className="project-action-button" onClick={() => startBlank(52, 52)}><PlusIcon /><span>{text.new}</span></button>
+              <button
+                className="project-action-button danger-action"
+                onClick={clearCanvas}
+                title={language === 'zh' ? '清空当前图层，可用撤销恢复' : 'Clear the active layer — undo restores it'}
+              >
+                <TrashIcon /><span>{text.clear}</span>
+              </button>
               <span className="project-action-divider" aria-hidden="true" />
               <button className="project-action-button history-action" onClick={undo} disabled={past.length === 0} title={`${text.undo} (Ctrl+Z / ⌘Z)`} aria-keyshortcuts="Control+Z Meta+Z"><UndoIcon /><span>{text.undo}</span></button>
               <button className="project-action-button history-action" onClick={redo} disabled={future.length === 0} title={`${text.redo} (Ctrl+Shift+Z / ⌘⇧Z / Ctrl+Y)`} aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"><RedoIcon /><span>{text.redo}</span></button>
+            </div>
+            <div className="toolbar-view-controls">
+              <button
+                className="panel-toggle"
+                type="button"
+                aria-pressed={leftCollapsed}
+                title={`${leftCollapsed ? (language === 'zh' ? '展开左栏' : 'Show left panel') : language === 'zh' ? '收起左栏' : 'Hide left panel'} (${language === 'zh' ? '参考图与导入' : 'reference & import'})`}
+                onClick={() => setLeftCollapsed((value) => !value)}
+              >
+                <PanelIcon side="left" />
+              </button>
+              <button
+                className="panel-toggle"
+                type="button"
+                aria-pressed={rightCollapsed}
+                title={`${rightCollapsed ? (language === 'zh' ? '展开右栏' : 'Show right panel') : language === 'zh' ? '收起右栏' : 'Hide right panel'} (${language === 'zh' ? '调色盘与用量' : 'palette & usage'})`}
+                onClick={() => setRightCollapsed((value) => !value)}
+              >
+                <PanelIcon side="right" />
+              </button>
+              <button
+                className="panel-toggle"
+                type="button"
+                aria-pressed={showShortcuts}
+                aria-label={language === 'zh' ? '快捷键说明' : 'Keyboard shortcuts'}
+                title={`${language === 'zh' ? '快捷键说明' : 'Keyboard shortcuts'} (?)`}
+                onClick={() => setShowShortcuts(true)}
+              >
+                <KeyboardIcon />
+              </button>
             </div>
       </div>
 
@@ -2189,6 +2510,10 @@ export default function App() {
             </span>
           </button>
 
+          <button type="button" className="compare-open-button" onClick={() => setShowCompare(true)}>
+            {text.compareOpen}
+          </button>
+
           <label className="switch-row reference-switch">
             <span>{text.showReferenceImage}</span>
             <input
@@ -2265,6 +2590,7 @@ export default function App() {
       </aside>
 
       <aside className="tool-rail">
+        <div className="tool-list">
         {tools.map((item) => (
           <button
             key={item.id}
@@ -2285,6 +2611,7 @@ export default function App() {
             <span>{text.tools[item.id].title}</span>
           </button>
         ))}
+        </div>
         {tool === 'pencil' && showPencilOptions && (
           <div className="tool-options pencil-options" onMouseLeave={() => setShowPencilOptions(false)}>
             <div className="right-click-toggle compact" aria-label={text.rightClick}>
@@ -2712,6 +3039,13 @@ export default function App() {
         fitLabel={text.fit}
         canEdit={!activeLayer.locked}
         lockedHint={text.lockedCanvasHint}
+        emptyHint={
+          !isGenerating && totalBeads === 0
+            ? language === 'zh'
+              ? '画布还是空的：在左侧导入一张图片自动生成，或直接用铅笔工具开始画。'
+              : 'Canvas is empty — import an image on the left, or start drawing with the pencil tool.'
+            : undefined
+        }
       />
 
       <aside className="right-panel">
@@ -2750,9 +3084,14 @@ export default function App() {
           </button>
         </div>
 
-        <section className="panel-section status-section">
+        <section
+          className={`panel-section status-section tone-${noticeTone}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <div>
-            <strong>{notice}</strong>
+            <strong title={notice}>{notice}</strong>
             <span>
               {text.panelStatus(project.width, project.height, usage.length, totalBeads, boardCount)}
             </span>
@@ -2761,7 +3100,7 @@ export default function App() {
           <span className="status-pill">{text.tools[tool].title}</span>
         </section>
 
-        <details className="panel-section canvas-colors-section" open>
+        <details className="panel-section canvas-colors-section">
           <summary className="canvas-colors-toggle">
             <h2>{language === 'zh' ? '画布已用色号' : 'Colors used on canvas'}</h2>
             <span>{usage.length} {language === 'zh' ? '色' : 'colors'}</span>
@@ -2842,20 +3181,112 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="palette-grid">
-              {visiblePalette.map((color) => (
+            <details className="stock-section">
+              <summary>
+                <span>{text.stockTitle}</span>
+                <span className="stock-count">{text.stockCount(stockOwnedCount, activePalette.length)}</span>
+              </summary>
+              <label className="stock-limit-toggle">
+                <input
+                  type="checkbox"
+                  checked={stock.enabled}
+                  disabled={stockOwnedCount < 2}
+                  onChange={(event) => setStock((current) => ({ ...current, enabled: event.target.checked }))}
+                />
+                <span>{text.stockEnable}</span>
+              </label>
+              <p className="stock-hint">{stockOwnedCount < 2 ? text.stockEmptyHint : text.stockEnableHint}</p>
+              <div className="stock-toolbar">
+                <input
+                  type="search"
+                  value={stockQuery}
+                  placeholder={text.stockSearch}
+                  onChange={(event) => setStockQuery(event.target.value)}
+                />
                 <button
-                  key={color.id}
-                  className={selectedColorId === color.id ? 'swatch active' : 'swatch'}
-                  title={`${displayCode(color)} ${displayName(color)}`}
-                  onClick={() => {
-                    selectColor(color.id);
-                  }}
+                  type="button"
+                  className={stockMarkMode ? 'active' : ''}
+                  aria-pressed={stockMarkMode}
+                  onClick={() => setStockMarkMode((current) => !current)}
                 >
-                  <span style={{ backgroundColor: color.hex }} />
-                  <small>{displayCode(color)}</small>
+                  {text.stockMarkMode}
                 </button>
-              ))}
+                <button
+                  type="button"
+                  className={stockOnlyOwned ? 'active' : ''}
+                  aria-pressed={stockOnlyOwned}
+                  onClick={() => setStockOnlyOwned((current) => !current)}
+                >
+                  {text.stockOnlyMarked}
+                </button>
+              </div>
+              {stockMarkMode && <p className="stock-hint">{text.stockMarkHint}</p>}
+              <div className="stock-actions">
+                <button type="button" onClick={selectVisibleStock}>
+                  {text.stockSelectVisible}
+                </button>
+                <button type="button" onClick={clearStock}>
+                  {text.stockClear}
+                </button>
+              </div>
+              <div className="stock-import">
+                <textarea
+                  rows={2}
+                  value={stockImportText}
+                  placeholder={text.stockImportHint}
+                  onChange={(event) => setStockImportText(event.target.value)}
+                />
+                <button type="button" onClick={applyStockImport}>
+                  {text.stockImport}
+                </button>
+              </div>
+              {stockImportNotice && <p className="stock-hint">{stockImportNotice}</p>}
+            </details>
+            <div className="palette-search">
+              <input
+                type="search"
+                value={paletteQuery}
+                placeholder={language === 'zh' ? '搜索色号或颜色名，如 A12、红' : 'Search code or color name'}
+                onChange={(event) => setPaletteQuery(event.target.value)}
+              />
+              {paletteQuery && (
+                <button type="button" onClick={() => setPaletteQuery('')} aria-label={language === 'zh' ? '清除搜索' : 'Clear search'}>
+                  ×
+                </button>
+              )}
+            </div>
+            {stockFilteredPalette.length === 0 && (
+              <p className="palette-empty">
+                {language === 'zh' ? '没有匹配的色号，换个分组或关键字试试。' : 'No matching color — try another group or keyword.'}
+              </p>
+            )}
+            <div className="palette-grid">
+              {stockFilteredPalette.map((color) => {
+                const owned = stockSet.has(color.id);
+                const className = [
+                  'swatch',
+                  selectedColorId === color.id ? 'active' : '',
+                  owned ? 'owned' : '',
+                  stockMarkMode ? 'marking' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
+                return (
+                  <button
+                    key={color.id}
+                    className={className}
+                    title={`${displayCode(color)} ${displayName(color)}`}
+                    onClick={() => {
+                      if (stockMarkMode) toggleStockColor(color.id);
+                      else selectColor(color.id);
+                    }}
+                  >
+                    <span style={{ backgroundColor: color.hex }} />
+                    <small>{displayCode(color)}</small>
+                    {owned && <i className="swatch-owned-dot" aria-hidden="true" />}
+                  </button>
+                );
+              })}
             </div>
           </section>
         )}
@@ -3066,6 +3497,11 @@ export default function App() {
               </div>
             </div>
             <small className="usage-stock-note">{text.stockSuggestHint}</small>
+            {usage.some((row) => row.substitution) && (
+              <small className="usage-substitute-summary">
+                {text.substituteSummary(usage.filter((row) => row.substitution).length)}
+              </small>
+            )}
             <label className="usage-pack-setting">
               <span>{text.beadsPerPack}</span>
               <div className="usage-pack-control">
@@ -3153,26 +3589,109 @@ export default function App() {
                 </div>
               )}
             </div>
-            <div className="usage-list">
-              {usage.map((row) => (
-                <button
-                  key={row.color.id}
-                  onMouseEnter={() => setHighlightedColorId(row.color.id)}
-                  onMouseLeave={() => setHighlightedColorId(null)}
-                >
-                  <span className="usage-chip" style={{ backgroundColor: row.color.hex }} />
-                  <span className="usage-color-info">
-                    <strong>{displayCode(row.color)}</strong>
-                    <small>{displayName(row.color)}</small>
-                  </span>
-                  <span className="usage-count">
-                    <strong>{row.count}</strong>
-                    <small>{row.packs} {text.packUnit}</small>
-                    <small className="usage-stock-hint">{text.stockSuggest} {suggestStock(row.count)}</small>
-                  </span>
+            <div className="usage-summary-card checkin-card">
+              <div className="usage-summary-head">
+                <strong>{text.checkProgress}</strong>
+                <span>{text.progressSummary(doneBeads, totalBeads, `${donePercent}%`)}</span>
+              </div>
+              <div className="checkin-bar" role="progressbar" aria-valuenow={donePercent} aria-valuemin={0} aria-valuemax={100}>
+                <i style={{ width: `${donePercent}%` }} />
+              </div>
+              <p className="stock-hint">{text.checkProgressHint}</p>
+              <div className="usage-layer-actions">
+                <button type="button" onClick={markAllColorsDone}>
+                  {text.checkAllDone}
                 </button>
-              ))}
-              {usage.length === 0 && <div className="usage-empty">{text.noUsage}</div>}
+                <button type="button" onClick={resetProgress}>
+                  {text.checkReset}
+                </button>
+              </div>
+            </div>
+            <div className="usage-list">
+              {usage.map((row) => {
+                const done = row.done ?? 0;
+                const finished = row.count > 0 && done >= row.count;
+                return (
+                  <div
+                    key={row.color.id}
+                    className={finished ? 'usage-row finished' : 'usage-row'}
+                    onMouseEnter={() => setHighlightedColorId(row.color.id)}
+                    onMouseLeave={() => setHighlightedColorId(null)}
+                  >
+                    <span className="usage-chip" style={{ backgroundColor: row.color.hex }} />
+                    <span className="usage-color-info">
+                      <strong>{displayCode(row.color)}</strong>
+                      <small>{displayName(row.color)}</small>
+                      {row.substitution && (
+                        <small
+                          className={`usage-substitute grade-${substitutionGrade(row.substitution.deltaE)}`}
+                          title={text.substituteHint(
+                            mappedCode(row.substitution.ideal, project.activeBrand),
+                            row.substitution.deltaE.toFixed(1),
+                            substituteGradeLabel(row.substitution.deltaE),
+                          )}
+                        >
+                          {text.substituteLabel} {mappedCode(row.substitution.ideal, project.activeBrand)} · ΔE{' '}
+                          {row.substitution.deltaE.toFixed(1)} · {substituteGradeLabel(row.substitution.deltaE)}
+                        </small>
+                      )}
+                    </span>
+                    <span className="usage-count">
+                      <strong>{row.count}</strong>
+                      <small>{row.packs} {text.packUnit}</small>
+                      <small className="usage-stock-hint">{text.stockSuggest} {suggestStock(row.count)}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className={finished ? 'usage-check done' : 'usage-check'}
+                      title={`${text.checkToggle} · ${text.checkDone(done, row.count)}`}
+                      aria-label={`${text.checkToggle} ${displayCode(row.color)}`}
+                      aria-pressed={finished}
+                      onClick={() => toggleColorDone(row.color.id, row.count)}
+                    >
+                      {finished ? '✓' : ''}
+                    </button>
+                  </div>
+                );
+              })}
+              {usage.length === 0 && (
+                <div className="usage-empty">
+                  <strong>{text.noUsage}</strong>
+                  <span>
+                    {language === 'zh'
+                      ? '在左侧导入图片，或用工具栏直接画；用量会自动按色号汇总。'
+                      : 'Import an image on the left or draw directly — usage is summarized automatically.'}
+                  </span>
+                </div>
+              )}
+              {crossBrandRows.length > 0 && (
+                <details className="cross-brand">
+                  <summary>
+                    <span>{text.crossBrand}</span>
+                    <span className="stock-count">{crossBrandLabel}</span>
+                  </summary>
+                  <p className="stock-hint">{text.crossBrandHint}</p>
+                  <div className="cross-brand-list">
+                    {crossBrandRows.map(({ row, other, deltaE }) => (
+                      <div className="cross-brand-row" key={`cross-${row.color.id}`}>
+                        <span className="cross-brand-side">
+                          <i style={{ backgroundColor: row.color.hex }} />
+                          <strong>{displayCode(row.color)}</strong>
+                        </span>
+                        <span className="cross-brand-arrow">→</span>
+                        <span className="cross-brand-side">
+                          <i style={{ backgroundColor: other.hex }} />
+                          <strong>{mappedCode(other, project.activeBrand === 'MARD' ? 'ARTKAL' : 'MARD')}</strong>
+                          <small>{other.name}</small>
+                        </span>
+                        <span className={`cross-brand-delta grade-${substitutionGrade(deltaE)}`}>
+                          {text.crossBrandDelta} {deltaE.toFixed(1)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           </section>
         )}
@@ -3485,6 +4004,75 @@ export default function App() {
           </section>
         </div>
       )}
+      {showShortcuts && (
+        <div
+          className="shortcut-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label={language === 'zh' ? '快捷键' : 'Keyboard shortcuts'}
+          onClick={() => setShowShortcuts(false)}
+        >
+          <section className="shortcut-dialog" onClick={(event) => event.stopPropagation()}>
+            <header className="shortcut-header">
+              <div>
+                <strong>{language === 'zh' ? '快捷键' : 'Keyboard shortcuts'}</strong>
+                <small>{language === 'zh' ? '焦点在输入框内时不生效。' : 'Ignored while typing in a field.'}</small>
+              </div>
+              <button type="button" className="compare-close" onClick={() => setShowShortcuts(false)} aria-label={text.close}>
+                ×
+              </button>
+            </header>
+            <div className="shortcut-columns">
+              <div>
+                <h3>{language === 'zh' ? '工具' : 'Tools'}</h3>
+                {tools.map((item) => (
+                  <div className="shortcut-row" key={item.id}>
+                    <kbd>{item.shortcut}</kbd>
+                    <span>{text.tools[item.id].title}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <h3>{language === 'zh' ? '操作' : 'Actions'}</h3>
+                <div className="shortcut-row">
+                  <kbd>Ctrl Z</kbd>
+                  <span>{text.undo}</span>
+                </div>
+                <div className="shortcut-row">
+                  <kbd>Ctrl Shift Z</kbd>
+                  <span>{text.redo}</span>
+                </div>
+                <div className="shortcut-row">
+                  <kbd>Esc</kbd>
+                  <span>{language === 'zh' ? '关闭弹窗 / 菜单' : 'Close dialog or menu'}</span>
+                </div>
+                <div className="shortcut-row">
+                  <kbd>?</kbd>
+                  <span>{language === 'zh' ? '打开本说明' : 'Open this help'}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+      {showCompare && (
+        <CompareDialog
+          file={pendingFile ?? referenceFile}
+          project={project}
+          labels={{
+            title: text.compareTitle,
+            hint: text.compareHint,
+            side: text.compareSide,
+            overlay: text.compareOverlay,
+            opacity: text.compareOpacity,
+            close: text.compareClose,
+            missing: text.compareMissing,
+            original: text.compareOriginal,
+            pattern: text.comparePattern,
+          }}
+          onClose={() => setShowCompare(false)}
+        />
+      )}
       {showUnlock && <UnlockDialog onClose={() => setShowUnlock(false)} />}
     </main>
   );
@@ -3550,13 +4138,14 @@ function mergeCloseLayerColors(
       .filter((candidate) => candidate.id !== source.id && candidate.count >= source.count)
       .map((candidate) => ({
         candidate,
-        distance: colorDistance(source.color.rgb, candidate.color.rgb),
+        distance: colorDistanceLab(source.color.rgb, candidate.color.rgb),
       }))
       .filter((item) => areLayerColorsClose(source.color, item.candidate.color, level))
       .sort((a, b) => {
-        const aScore = a.distance - Math.min(18, Math.log2(a.candidate.count + 1) * 2.2);
-        const bScore = b.distance - Math.min(18, Math.log2(b.candidate.count + 1) * 2.2);
-        return aScore - bScore;
+        // 旧 RGB 18 / 2.2 的加权，换算到 ΔE00 尺度后再比较，避免随色差尺度失衡。
+        const bias = Math.min(rgbThresholdToDeltaE(18), Math.log2(a.candidate.count + 1) * rgbThresholdToDeltaE(2.2));
+        const bBias = Math.min(rgbThresholdToDeltaE(18), Math.log2(b.candidate.count + 1) * rgbThresholdToDeltaE(2.2));
+        return a.distance - bias - (b.distance - bBias);
       })[0]?.candidate;
     if (target) replacements.set(source.id, replacements.get(target.id) ?? target.id);
   });
@@ -3589,17 +4178,18 @@ function areLayerColorsClose(
   const luminanceGap = Math.abs(fromLum - toLum);
   const chromaGap = Math.abs(fromChroma - toChroma);
   const hueGap = Math.min(Math.abs(fromHsl.h - toHsl.h), 360 - Math.abs(fromHsl.h - toHsl.h));
-  const distance = colorDistance(from.rgb, to.rgb);
+  // 色差一律按 CIEDE2000；旧的 RGB 距离阈值按实测系数换算（见 palette.ts）。
+  const distance = colorDistanceLab(from.rgb, to.rgb);
 
   if (neutral) {
-    return distance <= [0, 48, 68, 88, 108][level] && luminanceGap <= [0, 30, 44, 60, 76][level];
+    return distance <= rgbThresholdToDeltaE([0, 48, 68, 88, 108][level]) && luminanceGap <= [0, 30, 44, 60, 76][level];
   }
 
   if (vivid && hueGap > [0, 12, 18, 28, 38][level]) return false;
   if (chromaGap > [0, 30, 44, 60, 76][level]) return false;
   if (luminanceGap > [0, 34, 50, 68, 84][level]) return false;
 
-  const distanceLimit = vivid ? [0, 34, 50, 66, 82][level] : [0, 44, 64, 84, 104][level];
+  const distanceLimit = rgbThresholdToDeltaE(vivid ? [0, 34, 50, 66, 82][level] : [0, 44, 64, 84, 104][level]);
   if (distance <= distanceLimit) return true;
 
   return hueGap <= [0, 14, 24, 36, 48][level] && distance <= distanceLimit * 1.18;
@@ -3692,11 +4282,11 @@ function selectLayerColorRepresentatives(
     const next = stats
       .filter((row) => !keptIds.has(row.id))
       .map((row) => {
-        const nearestDistance = Math.min(...kept.map((item) => colorDistance(row.color.rgb, item.color.rgb)));
+        const nearestDistance = Math.min(...kept.map((item) => colorDistanceLab(row.color.rgb, item.color.rgb)));
         const chroma = rgbChroma(row.color.rgb);
         const luminance = rgbLuminance(row.color.rgb);
         const accentBoost = chroma > 70 || luminance < 42 ? 1.8 : chroma > 45 ? 1.25 : 1;
-        const score = Math.sqrt(row.count) * Math.max(0.4, nearestDistance / 18) * accentBoost;
+        const score = Math.sqrt(row.count) * Math.max(0.4, nearestDistance / rgbThresholdToDeltaE(18)) * accentBoost;
         return { row, score };
       })
       .sort((a, b) => b.score - a.score)[0]?.row;
@@ -3770,6 +4360,24 @@ function PlusIcon() {
   );
 }
 
+function PanelIcon({ side }: { side: 'left' | 'right' }) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="3" y="4" width="14" height="12" rx="2" />
+      <path d={side === 'left' ? 'M8 4v12' : 'M12 4v12'} />
+    </svg>
+  );
+}
+
+function KeyboardIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="2.5" y="5.5" width="15" height="9" rx="2" />
+      <path d="M6 9h1M9.5 9h1M13 9h1M6 12h8" />
+    </svg>
+  );
+}
+
 function UndoIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -3831,6 +4439,20 @@ function resizeCells(
     }
   }
   return next;
+}
+
+/**
+ * 把生成结果里的替代信息转成项目里的持久记录（色差保留一位小数，够用且省体积）。
+ */
+function toSubstitutionRecord(
+  substitutions: ConvertResult['substitutions'],
+): BeadProject['substitutions'] {
+  if (!substitutions || substitutions.length === 0) return undefined;
+  const record: NonNullable<BeadProject['substitutions']> = {};
+  for (const item of substitutions) {
+    record[item.colorId] = { idealId: item.idealId, deltaE: Math.round(item.deltaE * 10) / 10 };
+  }
+  return record;
 }
 
 /**

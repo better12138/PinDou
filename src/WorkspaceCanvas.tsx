@@ -78,6 +78,8 @@ type Props = {
   fitLabel: string;
   canEdit: boolean;
   lockedHint: string;
+  /** 画布全空时显示的新手引导文案；不传则不显示。 */
+  emptyHint?: string;
 };
 
 export default function WorkspaceCanvas({
@@ -124,6 +126,7 @@ export default function WorkspaceCanvas({
   fitLabel,
   canEdit,
   lockedHint,
+  emptyHint,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -810,6 +813,7 @@ export default function WorkspaceCanvas({
         {project.width} * {project.height}
       </div>
       {!canEdit && <div className="canvas-lock-hint">{lockedHint}</div>}
+      {canEdit && emptyHint && <div className="canvas-empty-hint">{emptyHint}</div>}
       {referenceImageAdjusting && referenceImageVisible && (
         <div className="reference-adjust-hint">{referenceAdjustHint}</div>
       )}
